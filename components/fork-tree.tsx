@@ -1,0 +1,654 @@
+'use client'
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ReactFlow,
+  Background,
+  Controls,
+  ReactFlowProvider,
+  useReactFlow,
+  type Node,
+  type Edge,
+  type NodeProps,
+  Handle,
+  Position,
+  MarkerType,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+import type { ForkStatus, RunEvent } from '../lib/events'
+
+type ForkNode = {
+  id: string
+  strategyName: string
+  description: string
+  intent: number
+  status: ForkStatus
+  phaseId?: string
+  phaseIndex?: number
+  parentForkId?: string
+  ordersCreated?: number
+  durMs?: number
+  verdict?: 'passed' | 'bug' | 'tolerable' | 'error'
+  excess?: number
+  error?: string
+  bugDetail?: string
+}
+
+type RootNode = {
+  cartSize?: number
+  origins?: number
+  targetUrl?: string
+}
+
+const STATUS_COLOR: Record<
+  ForkStatus,
+  { border: string; bg: string; accent: string; label: string; swatch: string }
+> = {
+  pending:    { border: '#2a2c32', bg: '#121317', accent: '#7a7f89', label: 'queued',     swatch: '#5a5f69' },
+  navigating: { border: '#7aa7ff', bg: '#0f1726', accent: '#9cbcff', label: 'navigating', swatch: '#7aa7ff' },
+  acting:     { border: '#fbbf24', bg: '#1e1707', accent: '#fde047', label: 'executing',  swatch: '#fbbf24' },
+  passed:     { border: '#7ddc9c', bg: '#0d1a13', accent: '#7ddc9c', label: 'passed',     swatch: '#7ddc9c' },
+  tolerable:  { border: '#64748b', bg: '#141b22', accent: '#9aa6b5', label: 'tolerable',  swatch: '#64748b' },
+  bug:        { border: '#ff6b6b', bg: '#2a0f10', accent: '#ffb4b4', label: 'bug found',  swatch: '#ff6b6b' },
+  error:      { border: '#c9a8ff', bg: '#1a1227', accent: '#e3cffe', label: 'errored',    swatch: '#c9a8ff' },
+}
+
+function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
+  return (
+    <div
+      style={{
+        background: '#121317',
+        border: '1px solid #2f333b',
+        borderRadius: 10,
+        padding: '0.9rem 1.1rem',
+        color: '#ececee',
+        minWidth: 260,
+        fontFamily: 'var(--font-sans), system-ui',
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: 10,
+          color: '#5a5f69',
+          textTransform: 'uppercase',
+          letterSpacing: '0.14em',
+        }}
+      >
+        Fork point · shared state
+      </div>
+      <div style={{ fontSize: 15, marginTop: 6, fontWeight: 500, letterSpacing: '-0.01em' }}>
+        Cart has {data.cartSize ?? '—'} items
+      </div>
+      <div
+        style={{
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: 11,
+          color: '#9ea3ad',
+          marginTop: 6,
+          display: 'flex',
+          gap: 12,
+        }}
+      >
+        <span>storageState</span>
+        <span>·</span>
+        <span>
+          {data.origins ?? 0} origin{data.origins === 1 ? '' : 's'}
+        </span>
+      </div>
+      {data.targetUrl && (
+        <div
+          style={{
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 10,
+            color: '#5a5f69',
+            marginTop: 4,
+          }}
+        >
+          {data.targetUrl}
+        </div>
+      )}
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+    </div>
+  )
+}
+
+function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
+  const c = STATUS_COLOR[data.status]
+  const isPulsing = data.status === 'navigating' || data.status === 'acting'
+  return (
+    <div
+      style={{
+        background: c.bg,
+        border: `1px solid ${c.border}`,
+        borderRadius: 10,
+        padding: '0.9rem 1rem',
+        color: '#ececee',
+        minWidth: 240,
+        maxWidth: 260,
+        fontFamily: 'var(--font-sans), system-ui',
+        boxShadow: selected
+          ? `0 0 0 2px ${c.border}55, 0 10px 30px rgba(0,0,0,0.45)`
+          : isPulsing
+          ? `0 0 24px ${c.border}55`
+          : '0 6px 18px rgba(0,0,0,0.35)',
+        transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+      }}
+    >
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: 10,
+          color: c.accent,
+          textTransform: 'uppercase',
+          letterSpacing: '0.12em',
+          fontWeight: 500,
+        }}
+      >
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 2,
+            background: c.swatch,
+            boxShadow: isPulsing ? `0 0 6px ${c.swatch}` : 'none',
+          }}
+        />
+        {c.label}
+      </div>
+      <div
+        style={{
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: 13,
+          marginTop: 6,
+          fontWeight: 500,
+          letterSpacing: '-0.005em',
+        }}
+      >
+        {data.strategyName}
+      </div>
+      <div style={{ fontSize: 11.5, color: '#9ea3ad', marginTop: 4, lineHeight: 1.45 }}>
+        {data.description}
+      </div>
+      <div
+        style={{
+          marginTop: 10,
+          paddingTop: 8,
+          borderTop: '1px dashed #2a2c32',
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: 11,
+          color: '#9ea3ad',
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr',
+          gap: 4,
+        }}
+      >
+        <span>
+          orders:{' '}
+          <strong style={{ color: data.verdict === 'bug' ? '#ffb4b4' : '#ececee', fontWeight: 500 }}>
+            {data.ordersCreated ?? '—'}
+          </strong>
+        </span>
+        {typeof data.durMs === 'number' && (
+          <span>
+            time: <strong style={{ color: '#ececee', fontWeight: 500 }}>{data.durMs}ms</strong>
+          </span>
+        )}
+        {data.excess !== undefined && (
+          <span style={{ color: '#ffb4b4', gridColumn: '1 / -1' }}>
+            +{data.excess} duplicate{data.excess > 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+      {data.bugDetail && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 10.5,
+            fontFamily: 'var(--font-mono), monospace',
+            color: data.verdict === 'bug' ? '#ffb4b4' : '#9ea3ad',
+            wordBreak: 'break-word',
+            lineHeight: 1.4,
+          }}
+        >
+          {data.bugDetail}
+        </div>
+      )}
+      {data.error && (
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 10,
+            fontFamily: 'var(--font-mono), monospace',
+            color: '#e3cffe',
+            wordBreak: 'break-word',
+          }}
+        >
+          err: {data.error.slice(0, 80)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const nodeTypes = { root: RootNodeView, fork: ForkNodeView }
+
+function isRunning(s: ForkStatus) {
+  return s === 'pending' || s === 'navigating' || s === 'acting'
+}
+
+function TreeInner({
+  root,
+  forks,
+  selectedId,
+  onSelect,
+}: {
+  root: RootNode
+  forks: ForkNode[]
+  selectedId: string | null
+  onSelect: (id: string | null) => void
+}) {
+  const { fitView } = useReactFlow()
+  const prevForkCount = useRef(0)
+
+  const { nodes, edges } = useMemo(() => {
+    const SPACING_X = 300
+    const LEVEL_Y = 260
+    const NODE_ANCHOR_OFFSET_X = -120 // fork node center ≈ position.x + 120
+
+    // Build parent → children adjacency so phase 2 forks hang off phase 1's
+    // control fork instead of all branching off the root.
+    const childrenOf = new Map<string, ForkNode[]>()
+    for (const f of forks) {
+      const parent = f.parentForkId ?? 'root'
+      if (!childrenOf.has(parent)) childrenOf.set(parent, [])
+      childrenOf.get(parent)!.push(f)
+    }
+
+    // Position nodes recursively: each parent's anchor-x becomes the center of
+    // its children's row one level below. Parents above their children means the
+    // tree grows visually downward from the fork point.
+    const pos = new Map<string, { x: number; y: number }>()
+    // Root is wider so its anchor differs; fork-node anchor is offset by 120.
+    pos.set('root', { x: -130, y: 0 })
+    const anchorX = (id: string) => {
+      const p = pos.get(id)!
+      // Root's visual center ≈ p.x + 130; fork's visual center ≈ p.x + 120.
+      return id === 'root' ? p.x + 130 : p.x + 120
+    }
+
+    function placeChildrenOf(parentId: string, depth: number) {
+      const kids = childrenOf.get(parentId)
+      if (!kids || kids.length === 0) return
+      const centerX = anchorX(parentId)
+      const startX = centerX - ((kids.length - 1) * SPACING_X) / 2
+      kids.forEach((k, i) => {
+        pos.set(k.id, {
+          x: startX + i * SPACING_X + NODE_ANCHOR_OFFSET_X,
+          y: depth * LEVEL_Y,
+        })
+      })
+      for (const k of kids) placeChildrenOf(k.id, depth + 1)
+    }
+    placeChildrenOf('root', 1)
+
+    const rootNode: Node = {
+      id: 'root',
+      type: 'root',
+      position: pos.get('root')!,
+      data: root as any,
+      draggable: false,
+      selectable: false,
+    }
+
+    const forkNodes: Node[] = forks
+      .filter((f) => pos.has(f.id))
+      .map((f) => ({
+        id: f.id,
+        type: 'fork',
+        position: pos.get(f.id)!,
+        data: f as any,
+        draggable: false,
+        selected: f.id === selectedId,
+      }))
+
+    const forkEdges: Edge[] = forks
+      .filter((f) => pos.has(f.id))
+      .map((f) => {
+        const stroke =
+          f.status === 'bug' ? '#ff6b6b'
+          : f.status === 'passed' ? '#7ddc9c'
+          : f.status === 'tolerable' ? '#64748b'
+          : f.status === 'error' ? '#c9a8ff'
+          : f.status === 'navigating' || f.status === 'acting' ? '#7aa7ff'
+          : '#2f333b'
+        const parentId = f.parentForkId ?? 'root'
+        return {
+          id: `e-${parentId}-${f.id}`,
+          source: parentId,
+          target: f.id,
+          type: 'smoothstep',
+          animated: isRunning(f.status),
+          style: { stroke, strokeWidth: 1.5 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
+        }
+      })
+
+    return { nodes: [rootNode, ...forkNodes], edges: forkEdges }
+  }, [forks, root, selectedId])
+
+  useEffect(() => {
+    if (forks.length !== prevForkCount.current) {
+      prevForkCount.current = forks.length
+      const t = setTimeout(() => {
+        fitView({ padding: 0.28, duration: 400 })
+      }, 40)
+      return () => clearTimeout(t)
+    }
+  }, [forks.length, fitView])
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={nodeTypes}
+      fitView
+      fitViewOptions={{ padding: 0.28 }}
+      proOptions={{ hideAttribution: true }}
+      nodesDraggable={false}
+      nodesConnectable={false}
+      panOnDrag
+      zoomOnScroll
+      minZoom={0.4}
+      maxZoom={1.6}
+      onNodeClick={(_, node) => {
+        if (node.id === 'root') onSelect(null)
+        else onSelect(node.id)
+      }}
+      onPaneClick={() => onSelect(null)}
+    >
+      <Background color="#1a1c21" gap={28} size={1} />
+      <Controls
+        showInteractive={false}
+        position="bottom-right"
+        style={{ background: '#111215', border: '1px solid #23262d' }}
+      />
+    </ReactFlow>
+  )
+}
+
+export function RunView({ runId }: { runId: string }) {
+  const [root, setRoot] = useState<RootNode>({})
+  const [forks, setForks] = useState<ForkNode[]>([])
+  const [complete, setComplete] = useState(false)
+  const [summary, setSummary] = useState<{ bugsFound: number; totalForks: number } | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const es = new EventSource(`/api/runs/${runId}/stream`)
+    es.onmessage = (msg) => {
+      try {
+        const evt = JSON.parse(msg.data) as RunEvent
+        switch (evt.type) {
+          case 'run_started':
+            setRoot((r) => ({ ...r, targetUrl: evt.targetUrl }))
+            break
+          case 'initial_state_reached':
+            setRoot((r) => ({ ...r, cartSize: evt.cartSize }))
+            break
+          case 'storage_snapshotted':
+            setRoot((r) => ({ ...r, origins: evt.origins }))
+            break
+          case 'fork_created':
+            setForks((fs) =>
+              fs.some((f) => f.id === evt.forkId)
+                ? fs
+                : [
+                    ...fs,
+                    {
+                      id: evt.forkId,
+                      strategyName: evt.strategyName,
+                      description: evt.description,
+                      intent: evt.intent,
+                      status: 'pending',
+                      phaseId: evt.phaseId,
+                      phaseIndex: evt.phaseIndex,
+                      parentForkId: evt.parentForkId,
+                    },
+                  ]
+            )
+            break
+          case 'fork_status':
+            setForks((fs) =>
+              fs.map((f) => (f.id === evt.forkId ? { ...f, status: evt.status } : f))
+            )
+            break
+          case 'fork_complete':
+            setForks((fs) =>
+              fs.map((f) =>
+                f.id === evt.forkId
+                  ? {
+                      ...f,
+                      ordersCreated: evt.ordersCreated,
+                      durMs: evt.durMs,
+                      verdict: evt.verdict,
+                      excess: evt.excess,
+                      error: evt.error,
+                      bugDetail: evt.bugDetail,
+                      status:
+                        evt.verdict === 'bug'
+                          ? 'bug'
+                          : evt.verdict === 'error'
+                          ? 'error'
+                          : evt.verdict === 'tolerable'
+                          ? 'tolerable'
+                          : 'passed',
+                    }
+                  : f
+              )
+            )
+            break
+          case 'run_complete':
+            setComplete(true)
+            setSummary({ bugsFound: evt.bugsFound, totalForks: evt.totalForks })
+            es.close()
+            break
+        }
+      } catch {}
+    }
+    es.onerror = () => {
+      // SSE closes on run completion
+    }
+    return () => es.close()
+  }, [runId])
+
+  const totalForks = forks.length
+  const completedForks = forks.filter((f) => !isRunning(f.status)).length
+  const bugsSoFar = forks.filter((f) => f.status === 'bug').length
+  const errorsSoFar = forks.filter((f) => f.status === 'error').length
+  const progressPct = totalForks === 0 ? 0 : (completedForks / totalForks) * 100
+
+  const overallState: 'warming' | 'running' | 'done' =
+    complete ? 'done' : totalForks === 0 ? 'warming' : 'running'
+
+  return (
+    <div className="run-shell">
+      <header className="run-top">
+        <div className="brand">
+          ◆ <strong>Parallel Agents</strong>
+          <span className="tag">/ run {shortId(runId)}</span>
+        </div>
+
+        <div className="run-progress">
+          <span className="counter">
+            {overallState === 'warming' && 'warming up shared state…'}
+            {overallState === 'running' && (
+              <>
+                <strong>{completedForks}</strong> / {totalForks} forks complete
+                {bugsSoFar > 0 && (
+                  <>
+                    {' · '}
+                    <strong style={{ color: '#ff6b6b' }}>
+                      {bugsSoFar} bug{bugsSoFar > 1 ? 's' : ''}
+                    </strong>
+                  </>
+                )}
+              </>
+            )}
+            {overallState === 'done' && summary && (
+              <>
+                run complete ·{' '}
+                <strong style={{ color: summary.bugsFound > 0 ? '#ff6b6b' : '#7ddc9c' }}>
+                  {summary.bugsFound > 0
+                    ? `${summary.bugsFound} bug${summary.bugsFound > 1 ? 's' : ''}`
+                    : 'no bugs'}
+                </strong>{' '}
+                across {summary.totalForks} forks
+              </>
+            )}
+          </span>
+          <div className={`progress-bar ${bugsSoFar > 0 ? 'has-bugs' : ''}`}>
+            <div className="fill" style={{ width: `${progressPct}%` }} />
+          </div>
+        </div>
+
+        <div className="badges">
+          {overallState === 'warming' && (
+            <span className="status-pill running">
+              <span className="dot" /> warming
+            </span>
+          )}
+          {overallState === 'running' && (
+            <span className="status-pill running">
+              <span className="dot" /> running
+            </span>
+          )}
+          {overallState === 'done' && bugsSoFar === 0 && errorsSoFar === 0 && (
+            <span className="status-pill done">
+              <span className="dot" /> clean
+            </span>
+          )}
+          {overallState === 'done' && (bugsSoFar > 0 || errorsSoFar > 0) && (
+            <span className="status-pill bugs">
+              <span className="dot" /> bugs
+            </span>
+          )}
+        </div>
+      </header>
+
+      <div className="run-body">
+        <aside className="run-sidebar">
+          <div className="sidebar-section">
+            <div className="section-label">Shared state</div>
+          </div>
+          <dl className="sidebar-state">
+            <dt>target</dt>
+            <dd>{root.targetUrl ?? '—'}</dd>
+            <dt>cart</dt>
+            <dd>{root.cartSize !== undefined ? `${root.cartSize} items` : '—'}</dd>
+            <dt>origins</dt>
+            <dd>{root.origins ?? '—'}</dd>
+          </dl>
+
+          <div className="sidebar-section">
+            <div className="section-label">
+              Forks{' '}
+              {totalForks > 0 && (
+                <span style={{ color: 'var(--ink-faint)' }}>({totalForks})</span>
+              )}
+            </div>
+          </div>
+          <div className="fork-list">
+            {forks.length === 0 && (
+              <div
+                style={{
+                  padding: '0.6rem 0.8rem',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 12,
+                  color: 'var(--ink-faint)',
+                }}
+              >
+                awaiting snapshot…
+              </div>
+            )}
+            {forks.map((f) => {
+              const c = STATUS_COLOR[f.status]
+              const cls =
+                f.status === 'bug' ? 'bug'
+                : f.status === 'passed' ? 'passed'
+                : f.status === 'error' ? 'error'
+                : isRunning(f.status) ? 'running'
+                : ''
+              return (
+                <button
+                  key={f.id}
+                  className={`fork-card ${cls} ${selectedId === f.id ? 'is-selected' : ''}`}
+                  onClick={() => setSelectedId(selectedId === f.id ? null : f.id)}
+                >
+                  <div className="fork-card-head">
+                    <span className="fork-dot" style={{ background: c.swatch }} />
+                    <span className="name">{f.strategyName}</span>
+                    <span className="stat" style={{ color: c.accent }}>
+                      {c.label}
+                    </span>
+                  </div>
+                  <div className="desc">{f.description}</div>
+                  {(f.verdict || typeof f.durMs === 'number') && (
+                    <div className="footline">
+                      <span>
+                        {f.ordersCreated !== undefined && (
+                          <>
+                            {f.ordersCreated} order{f.ordersCreated === 1 ? '' : 's'}
+                          </>
+                        )}
+                        {f.excess !== undefined && <> · +{f.excess} extra</>}
+                      </span>
+                      <span>
+                        {typeof f.durMs === 'number' ? `${(f.durMs / 1000).toFixed(1)}s` : ''}
+                      </span>
+                    </div>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </aside>
+
+        <section className="tree-area">
+          {complete && summary && (
+            <div className={`summary-banner ${summary.bugsFound > 0 ? 'bugs' : 'clean'}`}>
+              <span className="label">
+                {summary.bugsFound > 0 ? 'bugs found' : 'clean run'}
+              </span>
+              <strong>
+                {summary.bugsFound > 0
+                  ? `${summary.bugsFound} / ${summary.totalForks}`
+                  : `0 / ${summary.totalForks}`}
+              </strong>
+            </div>
+          )}
+          <ReactFlowProvider>
+            <TreeInner
+              root={root}
+              forks={forks}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+          </ReactFlowProvider>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function shortId(id: string): string {
+  if (id.length <= 10) return id
+  return `${id.slice(0, 4)}…${id.slice(-4)}`
+}
+
+export const ForkTreeViewer = RunView
