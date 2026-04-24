@@ -119,6 +119,132 @@ function compactDom(html: string, max = 4000): string {
   return stripped.length > max ? stripped.slice(0, max) + '…(truncated)' : stripped
 }
 
+export type GeneratedIntent = {
+  name: string
+  banner: string
+  bannerColor: string
+  description: string
+}
+
+const INTENT_LIST_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'list_intents',
+    description:
+      'Return a list of distinct adversarial intents to test on the current page. Choose between 2 and 5 — fewer if the page is simple, more if it has rich attack surface.',
+    parameters: {
+      type: 'object',
+      properties: {
+        intents: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 5,
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description:
+                  'Short kebab-case identifier, e.g. "race-double-submit" or "xss-in-title".',
+              },
+              description: {
+                type: 'string',
+                description:
+                  'Adversarial intent in plain English — what to test, what should happen, what would prove a bug.',
+              },
+              banner: {
+                type: 'string',
+                description:
+                  'Short banner shown on the headed browser, e.g. "🔴 RACE — double-click submit".',
+              },
+              bannerColor: {
+                type: 'string',
+                enum: ['#16a34a', '#dc2626', '#ea580c', '#9333ea', '#ca8a04', '#3b82f6'],
+                description:
+                  'Color for the banner: green for control, red for race, orange for overflow, purple for injection/confusion, yellow for validation, blue for other.',
+              },
+            },
+            required: ['name', 'description', 'banner', 'bannerColor'],
+          },
+        },
+      },
+      required: ['intents'],
+    },
+  },
+}
+
+const INTENT_SYSTEM_PROMPT = `You are a senior adversarial QA architect. Look at a screenshot + DOM of one page in a SaaS web app, and propose between 2 and 5 distinct adversarial intents to test on this exact page.
+
+Pick a number that fits the page:
+- 2 if the page is simple (just one form field, one button)
+- 3-4 if there are a few inputs and a clear submit
+- 5 if the page has rich state: multiple inputs, special fields like coupons or quantities, or complex flows
+
+Always include exactly ONE control intent (banner color #16a34a) that just exercises the happy path normally — this gives you a baseline.
+
+For the rest, choose adversarial intents that match what's actually on the page. Examples of good intents:
+- race conditions (concurrent submit on a non-idempotent endpoint)
+- numeric overflow / negative values on quantity-like inputs
+- missing required fields → server crash / 5xx
+- XSS / HTML injection into reflected fields (titles, names, etc.)
+- coupon code / promo abuse
+- javascript: schemes in URL fields
+
+Each intent must be a SEPARATE thing — don't propose two race conditions, propose one race + one overflow + etc.`
+
+export async function generateIntents(opts: {
+  pageUrl: string
+  domSnippet: string
+  screenshotB64: string
+  context: string
+}): Promise<GeneratedIntent[]> {
+  const c = getClient()
+  const userText = `URL: ${opts.pageUrl}
+
+Page context: ${opts.context}
+
+DOM snippet:
+${compactDom(opts.domSnippet)}
+
+Propose 2-5 adversarial intents for this page. Always include one control.`
+
+  const resp = await c.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.7,
+    messages: [
+      { role: 'system', content: INTENT_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: userText },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${opts.screenshotB64}`,
+              detail: 'low',
+            },
+          },
+        ],
+      },
+    ],
+    tools: [INTENT_LIST_TOOL],
+    tool_choice: { type: 'function', function: { name: 'list_intents' } },
+  })
+
+  const tc = resp.choices?.[0]?.message?.tool_calls?.[0]
+  if (!tc || tc.type !== 'function') throw new Error('intent generator returned no tool call')
+
+  let parsed: any
+  try {
+    parsed = JSON.parse(tc.function.arguments)
+  } catch (e) {
+    throw new Error(`failed to parse intent generator output: ${(e as Error).message}`)
+  }
+  const intents: GeneratedIntent[] = (parsed.intents ?? []).slice(0, 5)
+  if (intents.length < 2) throw new Error(`intent generator returned only ${intents.length} intents`)
+  return intents
+}
+
 export async function pickNextAction(opts: {
   intent: string
   pageUrl: string
