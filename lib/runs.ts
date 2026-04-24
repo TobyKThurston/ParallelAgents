@@ -38,7 +38,11 @@ export function getRun(id: string): Run | undefined {
 export function emit(runId: string, event: RunEvent) {
   const run = store.get(runId)
   if (!run) return
-  run.events.push(event)
+  // Don't persist high-volume screencast frames in the replay log — they'd
+  // bloat memory and slow down late subscribers. Only `final: true` frames
+  // are persisted so the frozen bug state survives reconnects.
+  const persist = event.type !== 'fork_frame' || event.final === true
+  if (persist) run.events.push(event)
   run.emitter.emit('event', event)
   if (event.type === 'run_complete') {
     run.complete = true

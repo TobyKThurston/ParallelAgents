@@ -17,6 +17,18 @@ export type RunEvent =
       parentForkId?: string
     }
   | { type: 'fork_status'; forkId: string; status: ForkStatus; detail?: string }
+  | { type: 'fork_frame'; forkId: string; data: string; final?: boolean }
+  | {
+      type: 'agent_thought'
+      forkId: string
+      step: number
+      action:
+        | { type: 'click'; selector: string; reason: string }
+        | { type: 'fill'; selector: string; value: string; reason: string }
+        | { type: 'press'; selector: string; key: string; reason: string }
+        | { type: 'eval'; code: string; reason: string }
+        | { type: 'done'; verdict: 'bug' | 'passed' | 'tolerable'; reason: string }
+    }
   | {
       type: 'fork_complete'
       forkId: string

@@ -17,6 +17,17 @@ import {
 import '@xyflow/react/dist/style.css'
 import type { ForkStatus, RunEvent } from '../lib/events'
 
+type AgentThought = {
+  step: number
+  type: 'click' | 'fill' | 'press' | 'eval' | 'done'
+  reason: string
+  selector?: string
+  value?: string
+  key?: string
+  code?: string
+  verdict?: 'bug' | 'passed' | 'tolerable'
+}
+
 type ForkNode = {
   id: string
   strategyName: string
@@ -32,6 +43,9 @@ type ForkNode = {
   excess?: number
   error?: string
   bugDetail?: string
+  frameB64?: string
+  frameIsFinal?: boolean
+  thoughts?: AgentThought[]
 }
 
 type RootNode = {
@@ -122,10 +136,9 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
         background: c.bg,
         border: `1px solid ${c.border}`,
         borderRadius: 10,
-        padding: '0.9rem 1rem',
+        padding: '0.75rem 0.85rem 0.85rem',
         color: '#ececee',
-        minWidth: 240,
-        maxWidth: 260,
+        width: 340,
         fontFamily: 'var(--font-sans), system-ui',
         boxShadow: selected
           ? `0 0 0 2px ${c.border}55, 0 10px 30px rgba(0,0,0,0.45)`
@@ -164,17 +177,97 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
       <div
         style={{
           fontFamily: 'var(--font-mono), monospace',
-          fontSize: 13,
-          marginTop: 6,
+          fontSize: 12.5,
+          marginTop: 5,
           fontWeight: 500,
           letterSpacing: '-0.005em',
         }}
       >
         {data.strategyName}
       </div>
-      <div style={{ fontSize: 11.5, color: '#9ea3ad', marginTop: 4, lineHeight: 1.45 }}>
+      <div style={{ fontSize: 11, color: '#9ea3ad', marginTop: 3, lineHeight: 1.4 }}>
         {data.description}
       </div>
+
+      {/* Embedded live viewport — JPEG frames streamed from CDP */}
+      <div
+        style={{
+          marginTop: 8,
+          position: 'relative',
+          aspectRatio: '16 / 10',
+          background: '#0a0b0d',
+          border: '1px solid #1d1f25',
+          borderRadius: 6,
+          overflow: 'hidden',
+        }}
+      >
+        {data.frameB64 ? (
+          <img
+            src={`data:image/jpeg;base64,${data.frameB64}`}
+            alt=""
+            draggable={false}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              objectPosition: 'top center',
+              display: 'block',
+              opacity: data.frameIsFinal && (data.status === 'bug' || data.status === 'error') ? 1 : 0.95,
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'grid',
+              placeItems: 'center',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 10,
+              color: '#5a5f69',
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+            }}
+          >
+            {data.status === 'pending' ? 'queued' : 'connecting…'}
+          </div>
+        )}
+        {isPulsing && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 6,
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: '#ff6b6b',
+              boxShadow: '0 0 6px #ff6b6b',
+              animation: 'pulse 1.3s ease-in-out infinite',
+            }}
+          />
+        )}
+        {data.frameIsFinal && (data.status === 'bug' || data.status === 'error') && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: 6,
+              left: 6,
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 9,
+              color: '#fff',
+              background: 'rgba(220,38,38,0.85)',
+              padding: '2px 6px',
+              borderRadius: 3,
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+            }}
+          >
+            frozen
+          </div>
+        )}
+      </div>
+
       <div
         style={{
           marginTop: 10,
@@ -205,6 +298,37 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
           </span>
         )}
       </div>
+      {data.thoughts && data.thoughts.length > 0 && (() => {
+        const latest = data.thoughts[data.thoughts.length - 1]
+        const verb =
+          latest.type === 'click' ? `click ${latest.selector ?? ''}`
+          : latest.type === 'fill' ? `fill ${latest.selector ?? ''}`
+          : latest.type === 'press' ? `press ${latest.key ?? ''}`
+          : latest.type === 'eval' ? 'eval'
+          : latest.type === 'done' ? `done · ${latest.verdict ?? ''}`
+          : latest.type
+        return (
+          <div
+            style={{
+              marginTop: 8,
+              padding: '6px 8px',
+              border: '1px solid #1d1f25',
+              borderRadius: 4,
+              background: '#0a0b0d',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 10,
+              color: '#9ea3ad',
+              lineHeight: 1.45,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#5a5f69', marginBottom: 2 }}>
+              <span>step {latest.step + 1}</span>
+              <span style={{ color: '#7aa7ff' }}>▸ {verb}</span>
+            </div>
+            <div style={{ color: '#cbd0d9' }}>{latest.reason}</div>
+          </div>
+        )
+      })()}
       {data.bugDetail && (
         <div
           style={{
@@ -257,9 +381,9 @@ function TreeInner({
   const prevForkCount = useRef(0)
 
   const { nodes, edges } = useMemo(() => {
-    const SPACING_X = 300
-    const LEVEL_Y = 260
-    const NODE_ANCHOR_OFFSET_X = -120 // fork node center ≈ position.x + 120
+    const SPACING_X = 380
+    const LEVEL_Y = 440
+    const NODE_ANCHOR_OFFSET_X = -170 // fork node center ≈ position.x + 170 (node is 340 wide)
 
     // Build parent → children adjacency so phase 2 forks hang off phase 1's
     // control fork instead of all branching off the root.
@@ -278,8 +402,8 @@ function TreeInner({
     pos.set('root', { x: -130, y: 0 })
     const anchorX = (id: string) => {
       const p = pos.get(id)!
-      // Root's visual center ≈ p.x + 130; fork's visual center ≈ p.x + 120.
-      return id === 'root' ? p.x + 130 : p.x + 120
+      // Root's visual center ≈ p.x + 130; fork's visual center ≈ p.x + 170 (node is 340 wide).
+      return id === 'root' ? p.x + 130 : p.x + 170
     }
 
     function placeChildrenOf(parentId: string, depth: number) {
@@ -426,6 +550,34 @@ export function RunView({ runId }: { runId: string }) {
           case 'fork_status':
             setForks((fs) =>
               fs.map((f) => (f.id === evt.forkId ? { ...f, status: evt.status } : f))
+            )
+            break
+          case 'fork_frame':
+            setForks((fs) =>
+              fs.map((f) =>
+                f.id === evt.forkId
+                  ? { ...f, frameB64: evt.data, frameIsFinal: !!evt.final }
+                  : f
+              )
+            )
+            break
+          case 'agent_thought':
+            setForks((fs) =>
+              fs.map((f) => {
+                if (f.id !== evt.forkId) return f
+                const a = evt.action
+                const t: AgentThought = {
+                  step: evt.step,
+                  type: a.type,
+                  reason: a.reason,
+                  selector: 'selector' in a ? a.selector : undefined,
+                  value: 'value' in a ? a.value : undefined,
+                  key: 'key' in a ? a.key : undefined,
+                  code: 'code' in a ? a.code : undefined,
+                  verdict: 'verdict' in a ? a.verdict : undefined,
+                }
+                return { ...f, thoughts: [...(f.thoughts ?? []), t] }
+              })
             )
             break
           case 'fork_complete':
