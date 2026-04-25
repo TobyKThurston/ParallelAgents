@@ -1,6 +1,8 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   ReactFlow,
   Background,
@@ -870,13 +872,43 @@ export function RunView({ runId }: { runId: string }) {
   const overallState: 'warming' | 'running' | 'done' =
     complete ? 'done' : totalForks === 0 ? 'warming' : 'running'
 
+  const router = useRouter()
+  const [rerunStarting, setRerunStarting] = useState(false)
+  const handleRerun = useCallback(async () => {
+    if (rerunStarting) return
+    setRerunStarting(true)
+    try {
+      const targetUrl = root.targetUrl
+      const res = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(targetUrl ? { targetUrl } : {}),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { runId: nextId } = (await res.json()) as { runId: string }
+      router.push(`/runs/${nextId}`)
+    } catch (e) {
+      setRerunStarting(false)
+      alert(`failed to start rerun: ${e}`)
+    }
+  }, [rerunStarting, root.targetUrl, router])
+
   return (
     <div className="run-shell">
       <header className="run-top">
-        <div className="brand">
+        <Link
+          href="/"
+          className="brand"
+          style={{
+            cursor: 'pointer',
+            transition: 'color 0.12s ease',
+          }}
+          aria-label="back to home"
+          title="back to home"
+        >
           ◆ <strong>Parallel Agents</strong>
           <span className="tag">/ run {shortId(runId)}</span>
-        </div>
+        </Link>
 
         <div className="run-progress">
           <span className="counter">
@@ -911,7 +943,7 @@ export function RunView({ runId }: { runId: string }) {
           </div>
         </div>
 
-        <div className="badges">
+        <div className="badges" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {overallState === 'warming' && (
             <span className="status-pill running">
               <span className="dot" /> warming
@@ -932,6 +964,45 @@ export function RunView({ runId }: { runId: string }) {
               <span className="dot" /> bugs
             </span>
           )}
+          <button
+            onClick={handleRerun}
+            disabled={rerunStarting}
+            aria-label="rerun"
+            title={overallState === 'done' ? 'Run again' : 'Start a new run (this one keeps going)'}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid #2f333b',
+              background: rerunStarting ? '#1d1d24' : '#15151a',
+              color: rerunStarting ? '#5a5f69' : '#cbd0d9',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              cursor: rerunStarting ? 'wait' : 'pointer',
+              transition: 'background 0.12s ease, border-color 0.12s ease, color 0.12s ease',
+            }}
+            onMouseEnter={(e) => {
+              if (!rerunStarting) {
+                e.currentTarget.style.background = '#1d1d24'
+                e.currentTarget.style.borderColor = '#a78bfa'
+                e.currentTarget.style.color = '#ececee'
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!rerunStarting) {
+                e.currentTarget.style.background = '#15151a'
+                e.currentTarget.style.borderColor = '#2f333b'
+                e.currentTarget.style.color = '#cbd0d9'
+              }
+            }}
+          >
+            {rerunStarting ? '…' : '↻'} rerun
+          </button>
         </div>
       </header>
 
