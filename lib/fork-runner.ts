@@ -185,7 +185,8 @@ async function runAgentLoop(opts: {
     let screenshotB64 = ''
     let dom = ''
     try {
-      const buf = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: false })
+      // quality 70 — readable enough for replay scrubber, still ~1/3 the size of full-quality
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false })
       screenshotB64 = buf.toString('base64')
       dom = await page.content().catch(() => '')
     } catch (e) {

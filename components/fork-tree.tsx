@@ -557,8 +557,8 @@ function TreeInner({
   const prevForkCount = useRef(0)
 
   const { nodes, edges } = useMemo(() => {
-    const SLOT_W = 380 // horizontal slot per leaf node (incl. gap)
-    const LEVEL_Y = 560
+    const SLOT_W = 480 // horizontal slot per leaf node (incl. gap)
+    const LEVEL_Y = 640 // vertical gap between depth levels
     const ROOT_HALF = 130 // root visual half-width
     const FORK_HALF = 170 // fork visual half-width (node is 340 wide)
     const TRUNK_COLOR = '#a78bfa'
