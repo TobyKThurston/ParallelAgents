@@ -12,18 +12,34 @@
 
 import OpenAI from 'openai'
 
+// Probe agents prefer Vercel AI Gateway (unifies billing + uses hackathon credits).
+// Falls back to direct OpenAI when AI_GATEWAY_API_KEY isn't set so existing setups
+// keep working unchanged.
+const GATEWAY_BASE_URL = 'https://ai-gateway.vercel.sh/v1'
+
+function gatewayKey(): string | undefined {
+  return process.env.AI_GATEWAY_API_KEY
+}
+
+export const PROBE_MODEL = gatewayKey() ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'
+
 let client: OpenAI | null = null
 function getClient(): OpenAI {
   if (!client) {
-    const key = process.env.OPENAI_API_KEY
-    if (!key) throw new Error('OPENAI_API_KEY not set in .env.local')
-    client = new OpenAI({ apiKey: key })
+    const gw = gatewayKey()
+    if (gw) {
+      client = new OpenAI({ apiKey: gw, baseURL: GATEWAY_BASE_URL })
+    } else {
+      const key = process.env.OPENAI_API_KEY
+      if (!key) throw new Error('Neither AI_GATEWAY_API_KEY nor OPENAI_API_KEY set in .env.local')
+      client = new OpenAI({ apiKey: key })
+    }
   }
   return client
 }
 
 export function hasApiKey(): boolean {
-  return !!process.env.OPENAI_API_KEY
+  return !!(process.env.AI_GATEWAY_API_KEY || process.env.OPENAI_API_KEY)
 }
 
 export type AgentAction =
@@ -277,7 +293,7 @@ ${compactDom(opts.domSnippet)}
 Propose 2-5 adversarial intents for this page. Always include one control.`
 
   const resp = await c.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: PROBE_MODEL,
     temperature: 0.7,
     messages: [
       { role: 'system', content: INTENT_SYSTEM_PROMPT },
@@ -342,7 +358,7 @@ DOM snippet (truncated):
 ${compactDom(opts.domSnippet)}`
 
   const resp = await c.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: PROBE_MODEL,
     temperature: 0.7,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
