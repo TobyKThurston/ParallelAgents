@@ -874,7 +874,7 @@ export function RunView({ runId }: { runId: string }) {
     <div className="run-shell">
       <header className="run-top">
         <div className="brand">
-          ◆ <strong>Parallel Agents</strong>
+          ◆ <strong>vibe check</strong>
           <span className="tag">/ run {shortId(runId)}</span>
         </div>
 

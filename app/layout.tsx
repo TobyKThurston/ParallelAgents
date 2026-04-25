@@ -24,7 +24,7 @@ const jetbrains = JetBrains_Mono({
 })
 
 export const metadata = {
-  title: 'Parallel Agents',
+  title: 'vibe check',
   description:
     'Adversarial fork-swarm that probes four parallel realities to find bugs a sequential run never will.',
 }
