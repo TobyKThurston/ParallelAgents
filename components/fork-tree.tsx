@@ -752,7 +752,12 @@ export function RunView({ runId }: { runId: string }) {
   const seenErrorsRef = useRef<Set<string>>(new Set())
   const dismissedAutoRef = useRef<Set<string>>(new Set())
   const handleExpand = useCallback((id: string) => setExpandedId(id), [])
-  const closeExpanded = useCallback(() => setExpandedId(null), [])
+  const closeExpanded = useCallback(() => {
+    setExpandedId((id) => {
+      if (id) dismissedAutoRef.current.add(id)
+      return null
+    })
+  }, [])
   const openFix = useCallback((id: string) => setFixId(id), [])
   const closeFix = useCallback(() => {
     if (fixId) dismissedAutoRef.current.add(fixId)
@@ -771,20 +776,9 @@ export function RunView({ runId }: { runId: string }) {
   const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
   const fixFork = fixId ? forks.find((f) => f.id === fixId) ?? null : null
 
-  // Auto-open the fix-with-Claude modal the first time a fork's verdict
-  // becomes 'error'. We track which ids we've already auto-shown so dismissing
-  // doesn't immediately re-pop, and so re-renders don't replay old errors.
-  useEffect(() => {
-    for (const f of forks) {
-      if (f.verdict !== 'error') continue
-      if (seenErrorsRef.current.has(f.id)) continue
-      seenErrorsRef.current.add(f.id)
-      if (!fixId && !dismissedAutoRef.current.has(f.id)) {
-        setFixId(f.id)
-        break
-      }
-    }
-  }, [forks, fixId])
+  // No auto-popup. The user opens the expanded view manually by clicking a
+  // fork tile. (Earlier behaviour auto-opened on error or bug — removed
+  // because it interrupts watching the live tree.)
 
   useEffect(() => {
     const es = new EventSource(`/api/runs/${runId}/stream`)
@@ -1280,7 +1274,7 @@ function ExpandedFork({
           maxHeight: '94vh',
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 360px',
-          gridTemplateRows: showClaudeSection ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)',
+          gridTemplateRows: showClaudeSection ? 'minmax(0, 1fr) minmax(0, 38vh)' : 'minmax(0, 1fr)',
           overflow: 'hidden',
           boxShadow: '0 30px 80px rgba(0,0,0,0.6)',
           fontFamily: 'var(--font-sans), system-ui',
