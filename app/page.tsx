@@ -61,9 +61,9 @@ export default function Home() {
 
       <main className="hero">
         <h1>
-          Four browsers,<br />
-          one shared state,<br />
-          <em>every</em> reality at once.
+          One snapshot,<br />
+          four browsers,<br />
+          <em>every</em> bug at once.
         </h1>
 
         <ForkDiagram />
