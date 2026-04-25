@@ -27,6 +27,11 @@ export type RunEvent =
         | { type: 'fill'; selector: string; value: string; reason: string }
         | { type: 'press'; selector: string; key: string; reason: string }
         | { type: 'eval'; code: string; reason: string }
+        | {
+            type: 'spawn'
+            intents: { name: string; description: string; bannerColor?: string }[]
+            reason: string
+          }
         | { type: 'done'; verdict: 'bug' | 'passed' | 'tolerable'; reason: string }
     }
   | {

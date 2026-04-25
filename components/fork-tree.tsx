@@ -19,13 +19,14 @@ import type { ForkStatus, RunEvent } from '../lib/events'
 
 type AgentThought = {
   step: number
-  type: 'click' | 'fill' | 'press' | 'eval' | 'done'
+  type: 'click' | 'fill' | 'press' | 'eval' | 'spawn' | 'done'
   reason: string
   selector?: string
   value?: string
   key?: string
   code?: string
   verdict?: 'bug' | 'passed' | 'tolerable'
+  spawnCount?: number
 }
 
 type ForkNode = {
@@ -335,6 +336,7 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
           : latest.type === 'fill' ? `fill ${latest.selector ?? ''}`
           : latest.type === 'press' ? `press ${latest.key ?? ''}`
           : latest.type === 'eval' ? 'eval'
+          : latest.type === 'spawn' ? `spawn ×${latest.spawnCount ?? '?'}`
           : latest.type === 'done' ? `done · ${latest.verdict ?? ''}`
           : latest.type
         return (
@@ -411,8 +413,8 @@ function TreeInner({
   const prevForkCount = useRef(0)
 
   const { nodes, edges } = useMemo(() => {
-    const SPACING_X = 380
-    const LEVEL_Y = 460
+    const SPACING_X = 460
+    const LEVEL_Y = 560
     const NODE_ANCHOR_OFFSET_X = -170 // fork node center ≈ position.x + 170 (node is 340 wide)
     const TRUNK_COLOR = '#a78bfa'
 
@@ -624,6 +626,7 @@ export function RunView({ runId }: { runId: string }) {
                   key: 'key' in a ? a.key : undefined,
                   code: 'code' in a ? a.code : undefined,
                   verdict: 'verdict' in a ? a.verdict : undefined,
+                  spawnCount: a.type === 'spawn' ? a.intents.length : undefined,
                 }
                 return { ...f, thoughts: [...(f.thoughts ?? []), t] }
               })

@@ -32,6 +32,11 @@ export type AgentAction =
   | { type: 'press'; selector: string; key: string; reason: string }
   | { type: 'eval'; code: string; reason: string }
   | {
+      type: 'spawn'
+      intents: { name: string; description: string; bannerColor?: string }[]
+      reason: string
+    }
+  | {
       type: 'done'
       verdict: 'bug' | 'passed' | 'tolerable'
       reason: string
@@ -47,7 +52,7 @@ const ACTION_TOOL = {
       properties: {
         type: {
           type: 'string',
-          enum: ['click', 'fill', 'press', 'eval', 'done'],
+          enum: ['click', 'fill', 'press', 'eval', 'spawn', 'done'],
           description: 'Which kind of action to take.',
         },
         selector: {
@@ -57,8 +62,7 @@ const ACTION_TOOL = {
         },
         value: {
           type: 'string',
-          description:
-            'For fill: the literal text/value to type. For eval: ignored.',
+          description: 'For fill: the literal text/value to type.',
         },
         key: {
           type: 'string',
@@ -74,6 +78,25 @@ const ACTION_TOOL = {
           enum: ['bug', 'passed', 'tolerable'],
           description:
             'For done: your overall judgement of whether the intent revealed a bug.',
+        },
+        intents: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 3,
+          description:
+            'For spawn: list of 2-3 sub-intents. Each will become a new fork branching off this one in the tree, starting from the page state you reached.',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'kebab-case identifier' },
+              description: { type: 'string', description: 'what this sub-fork should do' },
+              bannerColor: {
+                type: 'string',
+                enum: ['#16a34a', '#dc2626', '#ea580c', '#9333ea', '#ca8a04', '#3b82f6'],
+              },
+            },
+            required: ['name', 'description'],
+          },
         },
         reason: {
           type: 'string',
@@ -99,11 +122,22 @@ Action types:
   fill    — type a value into an input matching the selector
   press   — press a keyboard key after the selector is focused (e.g. "Enter")
   eval    — execute a JavaScript expression in the page (e.g. for state inspection,
-            adversarial DOM manipulation, or triggering events directly)
+            adversarial DOM manipulation, or triggering 2 concurrent fetches with
+            Promise.all to test idempotency)
+  spawn   — fork into 2-3 NEW sub-agents (use sparingly). Pick this when you've
+            navigated to a state where multiple INDEPENDENT attack paths open up
+            and pursuing them serially would mutate state. Each sub-intent should
+            be a meaningfully different angle. The current state is snapshotted
+            and each sub-fork starts from there. Use this when you DISCOVER
+            multiple options mid-loop — don't pre-plan it.
   done    — stop and return your verdict ('bug' | 'passed' | 'tolerable')
 
 Selectors must be valid CSS. When uncertain about a selector, prefer ids
 (\`#id\`) and stable attributes (\`[data-foo]\`).
+
+Most forks should NOT spawn — they should pursue a single intent to completion
+and return done. Only spawn if you've discovered multiple distinct opportunities
+that didn't exist at the original fork point.
 
 Return done as soon as you have learned enough to judge — usually within 3-5
 actions. Always include a one-sentence \`reason\` so a human watching your
@@ -173,24 +207,30 @@ const INTENT_LIST_TOOL = {
   },
 }
 
-const INTENT_SYSTEM_PROMPT = `You are a senior adversarial QA architect. Look at a screenshot + DOM of one page in a SaaS web app, and propose between 2 and 5 distinct adversarial intents to test on this exact page.
+const INTENT_SYSTEM_PROMPT = `You are a senior adversarial QA architect. Look at a screenshot + DOM of one page in a SaaS web app, and propose 2-5 distinct adversarial intents to test on this exact page.
 
-Pick a number that fits the page:
-- 2 if the page is simple (just one form field, one button)
-- 3-4 if there are a few inputs and a clear submit
-- 5 if the page has rich state: multiple inputs, special fields like coupons or quantities, or complex flows
+Choose the count based on the page's actual attack surface:
+  * 2 — simple pages: one input + one button, or trivial forms with no validation surface beyond "click submit"
+  * 3 — typical forms: a few inputs feeding one submit (most CRUD forms land here)
+  * 4 — pages with several independently-exploitable inputs (e.g. multiple text fields plus a numeric input plus a submit)
+  * 5 — rich pages with truly 5+ distinct attack classes: quantity AND coupon AND email AND name AND card, all exploitable in different ways
 
-Always include exactly ONE control intent (banner color #16a34a) that just exercises the happy path normally — this gives you a baseline.
+Pick the number that genuinely fits. Don't anchor on any default — count the real attack surfaces you see and let the answer fall out.
 
-For the rest, choose adversarial intents that match what's actually on the page. Examples of good intents:
-- race conditions (concurrent submit on a non-idempotent endpoint)
-- numeric overflow / negative values on quantity-like inputs
-- missing required fields → server crash / 5xx
-- XSS / HTML injection into reflected fields (titles, names, etc.)
-- coupon code / promo abuse
-- javascript: schemes in URL fields
+DO NOT pad. Two intents that test the same vulnerability class are ONE intent (e.g., "XSS in title" + "XSS in description" → just "XSS in any reflected field"). Each intent must be meaningfully distinct.
 
-Each intent must be a SEPARATE thing — don't propose two race conditions, propose one race + one overflow + etc.`
+Always include exactly ONE control intent (banner color #16a34a) that exercises the happy path normally — this gives a baseline against which other forks are diffed.
+
+The remaining 1-4 intents (however many fit the page) should match the page's actual attack surface. Examples of good intent types:
+  - race condition (concurrent submit on a non-idempotent endpoint)
+  - numeric overflow / negative values on a quantity-like input
+  - missing required field → server crash / 5xx
+  - XSS / HTML injection in any reflected field
+  - coupon / promo / discount abuse
+  - javascript: scheme in a URL field
+  - boundary value / type-confusion in a numeric or select input
+
+Pages with ONE attack surface beyond control deserve 2 intents. Pages with FIVE deserve 5. Match the page.`
 
 export async function generateIntents(opts: {
   pageUrl: string

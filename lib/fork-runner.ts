@@ -193,19 +193,31 @@ async function startFramePoll(
   }
 }
 
+type SpawnRequest = {
+  intents: { name: string; description: string; bannerColor?: string }[]
+  reason: string
+  /** A snapshot of the page state at the moment of spawn. */
+  storageState: any
+  /** The URL the parent had reached, sub-forks should resume here. */
+  pageUrl: string
+}
+
 async function runAgentLoop(opts: {
   runId: string
   forkId: string
   intent: string
   page: Page
+  ctx: BrowserContext
+  canSpawn: boolean
 }): Promise<{
   agentVerdict?: 'bug' | 'passed' | 'tolerable'
   agentReason?: string
   steps: number
   stats: { dialogsSeen: number; httpErrors: number }
   error?: string
+  spawn?: SpawnRequest
 }> {
-  const { runId, forkId, intent, page } = opts
+  const { runId, forkId, intent, page, ctx, canSpawn } = opts
   const stats = mkTracker(page)
   const history: AgentAction[] = []
   let agentVerdict: 'bug' | 'passed' | 'tolerable' | undefined
@@ -226,7 +238,9 @@ async function runAgentLoop(opts: {
     let action: AgentAction
     try {
       action = await pickNextAction({
-        intent,
+        intent: canSpawn
+          ? intent
+          : `${intent}\n\nNOTE: You cannot spawn sub-forks at this depth. Pursue the intent and return done.`,
         pageUrl: page.url(),
         domSnippet: dom,
         screenshotB64,
@@ -244,6 +258,33 @@ async function runAgentLoop(opts: {
       agentVerdict = action.verdict
       agentReason = action.reason
       break
+    }
+
+    if (action.type === 'spawn') {
+      if (!canSpawn) {
+        // Sub-forks aren't allowed to spawn further; treat as done/tolerable.
+        agentVerdict = 'tolerable'
+        agentReason = `tried to spawn but already nested: ${action.reason.slice(0, 60)}`
+        break
+      }
+      // Capture state and let the runner spin up children.
+      const snapshot = await ctx.storageState().catch(() => null)
+      if (!snapshot) {
+        agentVerdict = 'tolerable'
+        agentReason = `failed to snapshot for spawn`
+        break
+      }
+      return {
+        steps: step + 1,
+        stats,
+        agentReason: action.reason,
+        spawn: {
+          intents: action.intents.slice(0, 3),
+          reason: action.reason,
+          storageState: snapshot,
+          pageUrl: page.url(),
+        },
+      }
     }
 
     try {
@@ -358,6 +399,134 @@ async function evaluateVerdict(
   return { verdict: 'tolerable', detail: 'no bug signal observed', itemsCreated }
 }
 
+// ---------- Single-intent runner (used by both top-level and spawned forks) ----------
+
+const MAX_TOTAL_FORKS = 18
+
+async function runSingleFork(opts: {
+  runId: string
+  forkId: string
+  intent: { name: string; banner: string; bannerColor: string; description: string }
+  browser: Browser
+  serverUrl: string
+  navigateTo: string // initial path, e.g. /issues/new
+  storageState: any
+  fp: ForkPoint
+  canSpawn: boolean
+  totalForksRef: { count: number }
+}): Promise<{
+  verdict: 'passed' | 'bug' | 'tolerable' | 'error'
+  detail: string
+  itemsCreated: number
+  spawnRequest?: SpawnRequest
+}> {
+  const { runId, forkId, intent, browser, serverUrl, navigateTo, storageState, fp, canSpawn } = opts
+  const t0 = Date.now()
+  emit(runId, { type: 'fork_status', forkId, status: 'navigating' })
+
+  const ctx = await browser.newContext({
+    storageState,
+    viewport: VIEWPORT,
+  })
+  ctx.setDefaultTimeout(8000)
+  const page = await ctx.newPage()
+  const stopStream = await startFramePoll(ctx, page, (b64) => {
+    emit(runId, { type: 'fork_frame', forkId, data: b64 })
+  })
+
+  let verdict: 'passed' | 'bug' | 'tolerable' | 'error' = 'tolerable'
+  let detail = ''
+  let itemsCreated = 0
+  let spawnRequest: SpawnRequest | undefined
+
+  try {
+    await page.goto(serverUrl + navigateTo)
+    await injectBanner(page, intent.banner, intent.bannerColor)
+    emit(runId, {
+      type: 'fork_status',
+      forkId,
+      status: 'acting',
+      detail: intent.description.slice(0, 80),
+    })
+    await page.waitForTimeout(400)
+
+    const agentResult = await runAgentLoop({
+      runId,
+      forkId,
+      intent: intent.description,
+      page,
+      ctx,
+      canSpawn,
+    })
+
+    if (agentResult.spawn) {
+      spawnRequest = agentResult.spawn
+      verdict = 'tolerable' // a spawning fork is "trunk-tolerable" — its kids hold the verdict
+      detail = `spawned ${spawnRequest.intents.length} sub-forks · ${agentResult.agentReason ?? ''}`.slice(0, 120)
+    } else {
+      await page.waitForTimeout(400)
+      if (page.url() !== serverUrl + navigateTo) {
+        await injectBanner(
+          page,
+          `${intent.banner}  →  ${new URL(page.url()).pathname}`,
+          intent.bannerColor
+        )
+      }
+
+      const finalEval = await evaluateVerdict(
+        page,
+        fp,
+        agentResult.stats,
+        serverUrl,
+        agentResult.agentVerdict
+      )
+      verdict = finalEval.verdict
+      detail = finalEval.detail
+      itemsCreated = finalEval.itemsCreated
+      if (agentResult.error) {
+        verdict = 'error'
+        detail = agentResult.error
+      }
+
+      if (verdict === 'bug' || verdict === 'error') {
+        await injectBanner(
+          page,
+          `🐛 BUG FOUND — ${intent.name}  ·  ${detail}`,
+          '#dc2626'
+        )
+        await page.waitForTimeout(300)
+      }
+    }
+
+    // Final freeze frame
+    try {
+      const finalBuf = await page.screenshot({ type: 'jpeg', quality: 75 })
+      emit(runId, {
+        type: 'fork_frame',
+        forkId,
+        data: finalBuf.toString('base64'),
+        final: true,
+      })
+    } catch {}
+
+    emit(runId, { type: 'fork_status', forkId, status: verdict })
+    emit(runId, {
+      type: 'fork_complete',
+      forkId,
+      ordersCreated: itemsCreated,
+      durMs: Date.now() - t0,
+      verdict,
+      excess: itemsCreated > 1 ? itemsCreated - 1 : undefined,
+      bugDetail: detail,
+    })
+  } finally {
+    await stopStream()
+    await ctx.close().catch(() => {})
+  }
+
+  return { verdict, detail, itemsCreated, spawnRequest }
+}
+
 // ---------- Per-fork-point runner ----------
 
 async function runForkPoint(opts: {
@@ -367,6 +536,7 @@ async function runForkPoint(opts: {
   serverUrl: string
   parentForkId: string | undefined
   useLLM: boolean
+  totalForksRef: { count: number }
 }): Promise<{ bugsFound: number; controlForkId: string | undefined; intentsRun: number }> {
   const { runId, fp, browser, serverUrl, parentForkId, useLLM } = opts
 
@@ -442,108 +612,77 @@ async function runForkPoint(opts: {
   await Promise.all(
     intents.map(async (intent) => {
       const forkId = `${fp.id}.${intent.name}`
-      const t0 = Date.now()
-      emit(runId, { type: 'fork_status', forkId, status: 'navigating' })
+      opts.totalForksRef.count++
 
-      const ctx = await browser.newContext({
+      const result = await runSingleFork({
+        runId,
+        forkId,
+        intent: {
+          name: intent.name,
+          banner: intent.banner,
+          bannerColor: intent.bannerColor,
+          description: intent.description,
+        },
+        browser,
+        serverUrl,
+        navigateTo: fp.initialUrl,
         storageState: forkState,
-        viewport: VIEWPORT,
-      })
-      ctx.setDefaultTimeout(8000)
-      const page = await ctx.newPage()
-      const stopStream = await startFramePoll(ctx, page, (b64) => {
-        emit(runId, { type: 'fork_frame', forkId, data: b64 })
+        fp,
+        canSpawn: true, // top-level forks may spawn once
+        totalForksRef: opts.totalForksRef,
       })
 
-      try {
-        await page.goto(serverUrl + fp.initialUrl)
-        await injectBanner(page, intent.banner, intent.bannerColor)
-        emit(runId, {
-          type: 'fork_status',
-          forkId,
-          status: 'acting',
-          detail: intent.description.slice(0, 80),
-        })
-        await page.waitForTimeout(400)
+      if (result.verdict === 'bug') bugsFound++
 
-        let agentResult: Awaited<ReturnType<typeof runAgentLoop>>
-        if (useLLM) {
-          agentResult = await runAgentLoop({
-            runId,
-            forkId,
-            intent: intent.description,
-            page,
-          })
-        } else {
-          agentResult = {
-            steps: 0,
-            stats: { dialogsSeen: 0, httpErrors: 0 },
-            error: 'no OPENAI_API_KEY — agent loop skipped',
-          }
-        }
-
-        await page.waitForTimeout(400)
-
-        // If the agent navigated, re-inject banner so the final frame still shows it
-        if (page.url() !== serverUrl + fp.initialUrl) {
-          await injectBanner(
-            page,
-            `${intent.banner}  →  ${new URL(page.url()).pathname}`,
-            intent.bannerColor
-          )
-        }
-
-        const finalEval = await evaluateVerdict(
-          page,
-          fp,
-          agentResult.stats,
-          serverUrl,
-          agentResult.agentVerdict
+      // Handle a mid-loop spawn request: each sub-intent becomes a child fork
+      // descending from this fork in the tree. Sub-forks cannot spawn further.
+      if (result.spawnRequest) {
+        const spawn = result.spawnRequest
+        const allowedSpawns = Math.max(
+          0,
+          MAX_TOTAL_FORKS - opts.totalForksRef.count
         )
+        const subIntents = spawn.intents.slice(0, allowedSpawns)
 
-        let verdict: 'passed' | 'bug' | 'tolerable' | 'error' = finalEval.verdict
-        let detail = finalEval.detail
-        if (agentResult.error) {
-          verdict = 'error'
-          detail = agentResult.error
-        }
-        if (verdict === 'bug') bugsFound++
-
-        if (verdict === 'bug' || verdict === 'error') {
-          await injectBanner(
-            page,
-            `🐛 BUG FOUND — ${intent.name}  ·  ${detail}`,
-            '#dc2626'
-          )
-          await page.waitForTimeout(300)
-        }
-
-        // Capture freeze frame
-        try {
-          const finalBuf = await page.screenshot({ type: 'jpeg', quality: 75 })
+        // Announce all sub-forks before running so the tree renders placeholders
+        for (const si of subIntents) {
           emit(runId, {
-            type: 'fork_frame',
-            forkId,
-            data: finalBuf.toString('base64'),
-            final: true,
+            type: 'fork_created',
+            forkId: `${forkId}.${si.name}`,
+            strategyName: si.name,
+            description: si.description.slice(0, 120),
+            intent: 1,
+            phaseId: fp.id,
+            phaseIndex: fp.index,
+            parentForkId: forkId,
           })
-        } catch {}
+        }
+        await new Promise((r) => setTimeout(r, 250))
 
-        emit(runId, { type: 'fork_status', forkId, status: verdict })
-        emit(runId, {
-          type: 'fork_complete',
-          forkId,
-          ordersCreated: finalEval.itemsCreated,
-          durMs: Date.now() - t0,
-          verdict,
-          excess:
-            finalEval.itemsCreated > 1 ? finalEval.itemsCreated - 1 : undefined,
-          error: agentResult.error,
-          bugDetail: detail,
-        })
-      } finally {
-        await stopStream()
-        await ctx.close().catch(() => {})
+        await Promise.all(
+          subIntents.map(async (si) => {
+            opts.totalForksRef.count++
+            const subForkId = `${forkId}.${si.name}`
+            const subResult = await runSingleFork({
+              runId,
+              forkId: subForkId,
+              intent: {
+                name: si.name,
+                banner: `↳ ${si.description.slice(0, 60)}`,
+                bannerColor: si.bannerColor ?? '#3b82f6',
+                description: si.description,
+              },
+              browser,
+              serverUrl,
+              navigateTo: new URL(spawn.pageUrl).pathname,
+              storageState: spawn.storageState,
+              fp,
+              canSpawn: false, // sub-forks can't spawn further
+              totalForksRef: opts.totalForksRef,
+            })
+            if (subResult.verdict === 'bug') bugsFound++
+          })
+        )
       }
     })
   )
@@ -578,10 +717,10 @@ export async function runForkExperiment(runId: string): Promise<void> {
 
   // Fresh per-run map of "which fork was the control at each fork point"
   const controlByPoint = new Map<string, string>()
+  const totalForksRef = { count: 0 }
 
   try {
     let totalBugs = 0
-    let totalForks = 0
     for (const fp of forkPoints) {
       const parentForkId = fp.chainsFrom ? controlByPoint.get(fp.chainsFrom) : undefined
       const result = await runForkPoint({
@@ -591,9 +730,9 @@ export async function runForkExperiment(runId: string): Promise<void> {
         serverUrl: server.url,
         parentForkId,
         useLLM,
+        totalForksRef,
       })
       totalBugs += result.bugsFound
-      totalForks += result.intentsRun
       if (result.controlForkId) controlByPoint.set(fp.id, result.controlForkId)
       await new Promise((r) => setTimeout(r, 600))
     }
@@ -602,7 +741,7 @@ export async function runForkExperiment(runId: string): Promise<void> {
       type: 'run_complete',
       runId,
       bugsFound: totalBugs,
-      totalForks,
+      totalForks: totalForksRef.count,
       at: Date.now(),
     })
   } finally {
