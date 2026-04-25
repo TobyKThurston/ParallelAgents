@@ -3,15 +3,58 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
+type TargetRepoForm = {
+  owner: string
+  repo: string
+  baseBranch: string
+  installationId: string
+}
+
+const EMPTY_REPO: TargetRepoForm = { owner: '', repo: '', baseBranch: 'main', installationId: '' }
+
+function loadStoredRepo(): TargetRepoForm {
+  if (typeof window === 'undefined') return EMPTY_REPO
+  try {
+    const raw = window.localStorage.getItem('parallel-agents:targetRepo')
+    return raw ? { ...EMPTY_REPO, ...(JSON.parse(raw) as TargetRepoForm) } : EMPTY_REPO
+  } catch {
+    return EMPTY_REPO
+  }
+}
+
 export default function Home() {
   const router = useRouter()
   const [starting, setStarting] = useState(false)
+  const [showRepoForm, setShowRepoForm] = useState(false)
+  const [repoForm, setRepoForm] = useState<TargetRepoForm>(EMPTY_REPO)
+
+  useEffect(() => {
+    setRepoForm(loadStoredRepo())
+  }, [])
 
   const startRun = useCallback(async () => {
     if (starting) return
     setStarting(true)
     try {
-      const res = await fetch('/api/runs', { method: 'POST' })
+      const filled =
+        repoForm.owner && repoForm.repo && repoForm.baseBranch && repoForm.installationId
+      const body: { targetRepo?: unknown } = {}
+      if (filled) {
+        body.targetRepo = {
+          owner: repoForm.owner,
+          repo: repoForm.repo,
+          baseBranch: repoForm.baseBranch,
+          installationId: Number(repoForm.installationId),
+        }
+        try {
+          window.localStorage.setItem('parallel-agents:targetRepo', JSON.stringify(repoForm))
+        } catch {}
+      }
+      const res = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const { runId } = (await res.json()) as { runId: string }
       router.push(`/runs/${runId}`)
@@ -19,7 +62,7 @@ export default function Home() {
       setStarting(false)
       alert(`failed to start run: ${e}`)
     }
-  }, [router, starting])
+  }, [router, starting, repoForm])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -86,6 +129,67 @@ export default function Home() {
             <kbd>↵</kbd>
           </span>
         </div>
+
+        <div style={{ marginTop: 18, fontFamily: 'var(--font-mono), monospace', fontSize: 11 }}>
+          <button
+            type="button"
+            onClick={() => setShowRepoForm((s) => !s)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#7e848e',
+              cursor: 'pointer',
+              padding: 0,
+              fontSize: 11,
+              letterSpacing: '0.04em',
+            }}
+          >
+            {showRepoForm ? '▾' : '▸'} optional · target repo for auto-fix PRs
+          </button>
+          {showRepoForm && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: 12,
+                border: '1px solid #1d1f25',
+                borderRadius: 4,
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 8,
+                maxWidth: 460,
+                background: '#0a0b0d',
+              }}
+            >
+              <input
+                placeholder="owner"
+                value={repoForm.owner}
+                onChange={(e) => setRepoForm((f) => ({ ...f, owner: e.target.value }))}
+                style={inputStyle}
+              />
+              <input
+                placeholder="repo"
+                value={repoForm.repo}
+                onChange={(e) => setRepoForm((f) => ({ ...f, repo: e.target.value }))}
+                style={inputStyle}
+              />
+              <input
+                placeholder="base branch"
+                value={repoForm.baseBranch}
+                onChange={(e) => setRepoForm((f) => ({ ...f, baseBranch: e.target.value }))}
+                style={inputStyle}
+              />
+              <input
+                placeholder="installation id"
+                value={repoForm.installationId}
+                onChange={(e) => setRepoForm((f) => ({ ...f, installationId: e.target.value }))}
+                style={inputStyle}
+              />
+              <div style={{ gridColumn: '1 / -1', color: '#5a5f69', fontSize: 10 }}>
+                leave blank to disable patcher for this run · saved locally for next time
+              </div>
+            </div>
+          )}
+        </div>
       </main>
 
       <footer className="landing-footer">
@@ -101,6 +205,17 @@ export default function Home() {
       </footer>
     </div>
   )
+}
+
+const inputStyle: React.CSSProperties = {
+  padding: '6px 8px',
+  background: '#06070a',
+  border: '1px solid #1d1f25',
+  borderRadius: 3,
+  color: '#cbd0d9',
+  fontSize: 11,
+  fontFamily: 'var(--font-mono), monospace',
+  outline: 'none',
 }
 
 function ForkDiagram() {

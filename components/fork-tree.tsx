@@ -16,6 +16,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { ForkStatus, RunEvent } from '../lib/events'
+import type { PatchAttemptStatus } from '../lib/patcher/types'
+import { FixThisButton } from './fix-this-button'
+import { PatcherStatus, type PatcherView } from './patcher-status'
 
 const ExpandContext = createContext<((id: string) => void) | null>(null)
 
@@ -622,6 +625,8 @@ export function RunView({ runId }: { runId: string }) {
   const [summary, setSummary] = useState<{ bugsFound: number; totalForks: number } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [targetRepoConfigured, setTargetRepoConfigured] = useState(false)
+  const [patcherViews, setPatcherViews] = useState<Record<string, PatcherView>>({})
   const handleExpand = useCallback((id: string) => setExpandedId(id), [])
   const closeExpanded = useCallback(() => setExpandedId(null), [])
 
@@ -633,6 +638,20 @@ export function RunView({ runId }: { runId: string }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [expandedId])
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/runs/${runId}/meta`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) return
+        setTargetRepoConfigured(!!j.targetRepoConfigured)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [runId])
 
   const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
 
@@ -733,6 +752,64 @@ export function RunView({ runId }: { runId: string }) {
             setComplete(true)
             setSummary({ bugsFound: evt.bugsFound, totalForks: evt.totalForks })
             es.close()
+            break
+          case 'patcher.started':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'sandbox_starting' as PatchAttemptStatus,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.agent_message':
+            setPatcherViews((p) => {
+              const cur: PatcherView = p[evt.forkId] ?? { status: 'agent_running', messages: [] }
+              return {
+                ...p,
+                [evt.forkId]: {
+                  ...cur,
+                  status: cur.status === 'sandbox_starting' || cur.status === 'queued' ? 'agent_running' : cur.status,
+                  messages: [...cur.messages, evt.message].slice(-20),
+                },
+              }
+            })
+            break
+          case 'patcher.diff_ready':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'diff_ready' as PatchAttemptStatus,
+                diffSummary: evt.diffSummary,
+                filesChanged: evt.filesChanged,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.pr_opened':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'pr_opened' as PatchAttemptStatus,
+                prUrl: evt.prUrl,
+                prNumber: evt.prNumber,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.failed':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'failed' as PatchAttemptStatus,
+                failureReason: evt.reason,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
             break
         }
       } catch {}
@@ -919,12 +996,32 @@ export function RunView({ runId }: { runId: string }) {
           </ReactFlowProvider>
         </section>
       </div>
-      {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} />}
+      {expanded && (
+        <ExpandedFork
+          fork={expanded}
+          onClose={closeExpanded}
+          runId={runId}
+          targetRepoConfigured={targetRepoConfigured}
+          patcherView={patcherViews[expanded.id]}
+        />
+      )}
     </div>
   )
 }
 
-function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }) {
+function ExpandedFork({
+  fork,
+  onClose,
+  runId,
+  targetRepoConfigured,
+  patcherView,
+}: {
+  fork: ForkNode
+  onClose: () => void
+  runId: string
+  targetRepoConfigured: boolean
+  patcherView?: PatcherView
+}) {
   const c = STATUS_COLOR[fork.status]
   const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
   const thoughts = fork.thoughts ?? []
@@ -1159,6 +1256,17 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
                 }}
               >
                 {fork.bugDetail}
+              </div>
+            )}
+            {fork.verdict === 'bug' && targetRepoConfigured && (
+              <div style={{ marginTop: 10 }}>
+                <FixThisButton
+                  runId={runId}
+                  forkId={fork.id}
+                  status={patcherView?.status}
+                  prUrl={patcherView?.prUrl}
+                />
+                {patcherView && <PatcherStatus view={patcherView} />}
               </div>
             )}
             {fork.error && (
