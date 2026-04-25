@@ -15,7 +15,19 @@ import {
   MarkerType,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { ForkStatus, RunEvent } from '../lib/events'
+import type { BugKind, ForkStatus, RunEvent } from '../lib/events'
+
+const BUG_KIND_COLOR: Record<BugKind, { bg: string; fg: string; label: string }> = {
+  'xss':                { bg: '#3b1740', fg: '#f0aaff', label: 'XSS' },
+  'server-error':       { bg: '#3a1010', fg: '#ff9090', label: '5XX' },
+  'validation-bypass':  { bg: '#3a2a08', fg: '#ffcd6d', label: 'NO VALIDATE' },
+  'broken-ui-state':    { bg: '#3a1f08', fg: '#ffb060', label: 'BROKEN UI' },
+  'duplicate-state':    { bg: '#3b0e1f', fg: '#ff8fb1', label: 'RACE' },
+  'auth-bypass':        { bg: '#1f2a3a', fg: '#7ec8ff', label: 'AUTHZ' },
+  'data-leak':          { bg: '#2a3a1f', fg: '#b9e07a', label: 'LEAK' },
+  'crash':              { bg: '#2a1740', fg: '#c9a8ff', label: 'CRASH' },
+  'other':              { bg: '#2a1010', fg: '#ff8585', label: 'BUG' },
+}
 
 const ExpandContext = createContext<((id: string) => void) | null>(null)
 
@@ -28,6 +40,8 @@ type AgentThought = {
   key?: string
   code?: string
   verdict?: 'bug' | 'passed' | 'tolerable'
+  bugKind?: BugKind
+  evidence?: string
   spawnCount?: number
   /** Screenshot the agent saw before this step's action — used by replay scrubber. */
   frameB64?: string
@@ -45,6 +59,8 @@ type ForkNode = {
   ordersCreated?: number
   durMs?: number
   verdict?: 'passed' | 'bug' | 'tolerable' | 'error'
+  bugKind?: BugKind
+  bugEvidence?: string
   excess?: number
   error?: string
   bugDetail?: string
@@ -406,7 +422,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
               : t.type === 'eval' ? 'EVAL'
               : t.type === 'spawn' ? `SPAWN ×${t.spawnCount ?? '?'}`
               : t.type === 'done' ? `DONE · ${t.verdict ?? ''}`
-              : ''
+              : (t as any).type
             return (
               <div
                 key={i}
@@ -452,6 +468,41 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
           })}
         </div>
       )}
+      {data.verdict === 'bug' && data.bugKind && (() => {
+        const k = BUG_KIND_COLOR[data.bugKind]
+        return (
+          <div
+            style={{
+              marginTop: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span
+              style={{
+                background: k.bg,
+                color: k.fg,
+                border: `1px solid ${k.fg}`,
+                borderRadius: 3,
+                padding: '1px 6px',
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: '0.06em',
+                fontFamily: 'var(--font-mono), monospace',
+              }}
+            >
+              {k.label}
+            </span>
+            {data.bugEvidence && (
+              <span style={{ color: '#ffb4b4', fontSize: 10.5, fontFamily: 'var(--font-mono), monospace' }}>
+                {data.bugEvidence}
+              </span>
+            )}
+          </div>
+        )
+      })()}
       {data.bugDetail && (
         <div
           style={{
@@ -760,6 +811,8 @@ export function RunView({ runId }: { runId: string }) {
                   key: 'key' in a ? a.key : undefined,
                   code: 'code' in a ? a.code : undefined,
                   verdict: 'verdict' in a ? a.verdict : undefined,
+                  bugKind: 'bug_kind' in a ? a.bug_kind : undefined,
+                  evidence: 'evidence' in a ? a.evidence : undefined,
                   spawnCount: a.type === 'spawn' ? a.intents.length : undefined,
                   frameB64: evt.frameB64,
                 }
@@ -776,6 +829,8 @@ export function RunView({ runId }: { runId: string }) {
                       ordersCreated: evt.ordersCreated,
                       durMs: evt.durMs,
                       verdict: evt.verdict,
+                      bugKind: evt.bugKind,
+                      bugEvidence: evt.bugEvidence,
                       excess: evt.excess,
                       error: evt.error,
                       bugDetail: evt.bugDetail,

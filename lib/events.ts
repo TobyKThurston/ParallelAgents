@@ -1,5 +1,16 @@
 export type ForkStatus = 'pending' | 'navigating' | 'acting' | 'passed' | 'bug' | 'tolerable' | 'error'
 
+export type BugKind =
+  | 'xss'
+  | 'server-error'
+  | 'validation-bypass'
+  | 'broken-ui-state'
+  | 'duplicate-state'
+  | 'auth-bypass'
+  | 'data-leak'
+  | 'crash'
+  | 'other'
+
 export type RunEvent =
   | { type: 'run_started'; runId: string; targetUrl: string; at: number }
   | { type: 'initial_state_reached'; cartSize: number; at: number }
@@ -34,7 +45,13 @@ export type RunEvent =
             intents: { name: string; description: string; bannerColor?: string }[]
             reason: string
           }
-        | { type: 'done'; verdict: 'bug' | 'passed' | 'tolerable'; reason: string }
+        | {
+            type: 'done'
+            verdict: 'bug' | 'passed' | 'tolerable'
+            reason: string
+            bug_kind?: BugKind
+            evidence?: string
+          }
     }
   | {
       type: 'fork_complete'
@@ -42,6 +59,8 @@ export type RunEvent =
       ordersCreated: number
       durMs: number
       verdict: 'passed' | 'bug' | 'tolerable' | 'error'
+      bugKind?: BugKind
+      bugEvidence?: string
       excess?: number
       error?: string
       bugDetail?: string

@@ -26,6 +26,17 @@ export function hasApiKey(): boolean {
   return !!process.env.OPENAI_API_KEY
 }
 
+export type BugKind =
+  | 'xss'
+  | 'server-error'
+  | 'validation-bypass'
+  | 'broken-ui-state'
+  | 'duplicate-state'
+  | 'auth-bypass'
+  | 'data-leak'
+  | 'crash'
+  | 'other'
+
 export type AgentAction =
   | { type: 'click'; selector: string; reason: string }
   | { type: 'fill'; selector: string; value: string; reason: string }
@@ -40,6 +51,8 @@ export type AgentAction =
       type: 'done'
       verdict: 'bug' | 'passed' | 'tolerable'
       reason: string
+      bug_kind?: BugKind
+      evidence?: string
     }
 
 const ACTION_TOOL = {
@@ -78,6 +91,27 @@ const ACTION_TOOL = {
           enum: ['bug', 'passed', 'tolerable'],
           description:
             'For done: your overall judgement of whether the intent revealed a bug.',
+        },
+        bug_kind: {
+          type: 'string',
+          enum: [
+            'xss',
+            'server-error',
+            'validation-bypass',
+            'broken-ui-state',
+            'duplicate-state',
+            'auth-bypass',
+            'data-leak',
+            'crash',
+            'other',
+          ],
+          description:
+            'For done with verdict=bug: the bug category. xss=script payload executed; server-error=5xx; validation-bypass=server accepted invalid input; broken-ui-state=NaN/Infinity/$undefined/negative totals/mangled layout; duplicate-state=race produced two records; auth-bypass=accessed something you should not have; data-leak=sensitive info exposed; crash=page or JS errored.',
+        },
+        evidence: {
+          type: 'string',
+          description:
+            'For done with verdict=bug: a brief literal quote of what you observed (e.g. "total: NaN", "alert dialog: xss", "2 issues created"). One sentence, factual.',
         },
         intents: {
           type: 'array',
@@ -172,7 +206,18 @@ state-mutating paths — just stay single-track and return done.
 
 Return done as soon as you have learned enough to judge — usually within 3-5
 actions. Always include a one-sentence \`reason\` so a human watching your
-swarm can follow your thinking.`
+swarm can follow your thinking.
+
+When you return done with verdict='bug', you MUST also set:
+  bug_kind  — pick the closest category from the enum
+  evidence  — a one-sentence literal description of what you observed
+              (e.g. "displayed total: NaN", "alert dialog fired with text 'xss'",
+               "2 issues created from 1 submit")
+
+If verdict is 'passed' or 'tolerable', omit bug_kind and evidence.
+
+Be conservative: only claim bug if you saw something a maintainer would clearly
+call broken. If unsure, prefer 'tolerable'.`
 
 function compactDom(html: string, max = 4000): string {
   // Strip script/style bodies and collapse whitespace; keep tag attributes.
@@ -262,6 +307,141 @@ The remaining 1-4 intents (however many fit the page) should match the page's ac
   - boundary value / type-confusion in a numeric or select input
 
 Pages with ONE attack surface beyond control deserve 2 intents. Pages with FIVE deserve 5. Match the page.`
+
+// ---------- Site-discovery pass ----------
+
+export type DiscoveredForkPoint = {
+  name: string
+  title: string
+  path: string
+  context: string
+}
+
+const DISCOVER_TOOL = {
+  type: 'function' as const,
+  function: {
+    name: 'list_fork_points',
+    description:
+      'List 1-4 distinct pages of this web app worth adversarially testing. Each is a place where the runner will spawn a fork wave.',
+    parameters: {
+      type: 'object',
+      properties: {
+        site_summary: {
+          type: 'string',
+          description:
+            'One-sentence summary of what this app is and what its primary user-facing flows are.',
+        },
+        fork_points: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 4,
+          items: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Short kebab-case slug, e.g. "issue-create" or "checkout".',
+              },
+              title: {
+                type: 'string',
+                description: 'Human label, e.g. "Issue creation form".',
+              },
+              path: {
+                type: 'string',
+                description:
+                  'Relative path from the entry URL ("/issues/new") OR an absolute URL. Required.',
+              },
+              context: {
+                type: 'string',
+                description:
+                  '1-3 sentence description of what this page does, what its inputs are, and any visible attack surface. Used by the next-stage planner.',
+              },
+            },
+            required: ['name', 'title', 'path', 'context'],
+          },
+        },
+      },
+      required: ['site_summary', 'fork_points'],
+    },
+  },
+}
+
+const DISCOVER_SYSTEM_PROMPT = `You are mapping a web app for adversarial testing.
+
+Given the entry page (screenshot + DOM), identify 1-4 distinct pages worth
+probing — pages with FORMS, MUTATIONS, INPUTS, or sensitive READS.
+
+Pick by attack surface, not just by what's visible in the nav:
+  - prefer pages with submittable forms over pure landing pages
+  - prefer pages that POST/PUT/DELETE over read-only views
+  - prefer pages that reflect user input back to other users
+  - skip generic "about / pricing / blog" pages with no input
+  - if the entry page itself has the most attack surface, that's fine —
+    return just one fork point (the entry path itself)
+
+Don't pad. Three is plenty for most apps. The cost of probing each page
+is real, so only include pages with genuine attack surface.
+
+For each fork point, give a 1-3 sentence context the next-stage planner
+will use to propose intents — describe what's on the page (inputs, buttons,
+endpoints) and any obvious attack vectors.`
+
+export async function discoverForkPoints(opts: {
+  entryUrl: string
+  domSnippet: string
+  screenshotB64: string
+}): Promise<DiscoveredForkPoint[]> {
+  const c = getClient()
+  const t0 = Date.now()
+  console.log(`[discover] → request  url=${opts.entryUrl}`)
+
+  const resp = await c.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.5,
+    messages: [
+      { role: 'system', content: DISCOVER_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `Entry URL: ${opts.entryUrl}\n\nDOM snippet (truncated):\n${compactDom(opts.domSnippet, 6000)}`,
+          },
+          {
+            type: 'image_url',
+            image_url: {
+              url: `data:image/jpeg;base64,${opts.screenshotB64}`,
+              detail: 'low',
+            },
+          },
+        ],
+      },
+    ],
+    tools: [DISCOVER_TOOL],
+    tool_choice: { type: 'function', function: { name: 'list_fork_points' } },
+  })
+
+  const dur = Date.now() - t0
+  const usage = resp.usage
+  console.log(
+    `[discover] ← response dur=${dur}ms tokens=${usage?.prompt_tokens ?? '?'}+${usage?.completion_tokens ?? '?'}`
+  )
+
+  const tc = resp.choices?.[0]?.message?.tool_calls?.[0]
+  if (!tc || tc.type !== 'function') throw new Error('discover returned no tool call')
+  const parsed = JSON.parse(tc.function.arguments) as {
+    site_summary: string
+    fork_points: DiscoveredForkPoint[]
+  }
+  console.log(`[discover]   site_summary: ${parsed.site_summary?.slice(0, 120)}`)
+  if (!Array.isArray(parsed.fork_points) || parsed.fork_points.length === 0) {
+    throw new Error('discover returned no fork points')
+  }
+  for (const fp of parsed.fork_points) {
+    console.log(`[discover]   point ${fp.name}  path=${fp.path}  · ${fp.context.slice(0, 80)}`)
+  }
+  return parsed.fork_points
+}
 
 export async function generateIntents(opts: {
   pageUrl: string
