@@ -75,8 +75,6 @@ type ForkNode = {
 }
 
 type RootNode = {
-  cartSize?: number
-  origins?: number
   targetUrl?: string
 }
 
@@ -118,31 +116,16 @@ function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
         Fork point · shared state
       </div>
       <div style={{ fontSize: 15, marginTop: 6, fontWeight: 500, letterSpacing: '-0.01em' }}>
-        Cart has {data.cartSize ?? '—'} items
-      </div>
-      <div
-        style={{
-          fontFamily: 'var(--font-mono), monospace',
-          fontSize: 11,
-          color: '#9ea3ad',
-          marginTop: 6,
-          display: 'flex',
-          gap: 12,
-        }}
-      >
-        <span>storageState</span>
-        <span>·</span>
-        <span>
-          {data.origins ?? 0} origin{data.origins === 1 ? '' : 's'}
-        </span>
+        Target page
       </div>
       {data.targetUrl && (
         <div
           style={{
             fontFamily: 'var(--font-mono), monospace',
-            fontSize: 10,
-            color: '#5a5f69',
-            marginTop: 4,
+            fontSize: 11,
+            color: '#9ea3ad',
+            marginTop: 6,
+            wordBreak: 'break-all',
           }}
         >
           {data.targetUrl}
@@ -812,12 +795,6 @@ export function RunView({ runId }: { runId: string }) {
           case 'run_started':
             setRoot((r) => ({ ...r, targetUrl: evt.targetUrl }))
             break
-          case 'initial_state_reached':
-            setRoot((r) => ({ ...r, cartSize: evt.cartSize }))
-            break
-          case 'storage_snapshotted':
-            setRoot((r) => ({ ...r, origins: evt.origins }))
-            break
           case 'fork_created':
             setForks((fs) =>
               fs.some((f) => f.id === evt.forkId)
@@ -1063,10 +1040,6 @@ export function RunView({ runId }: { runId: string }) {
           <dl className="sidebar-state">
             <dt>target</dt>
             <dd>{root.targetUrl ?? '—'}</dd>
-            <dt>cart</dt>
-            <dd>{root.cartSize !== undefined ? `${root.cartSize} items` : '—'}</dd>
-            <dt>origins</dt>
-            <dd>{root.origins ?? '—'}</dd>
           </dl>
 
           <div className="sidebar-section">
@@ -1503,6 +1476,7 @@ function ExpandedFork({
                 alignItems: 'center',
                 gap: 12,
                 background: '#0b0c0f',
+                flexShrink: 0,
               }}
             >
               <button
@@ -1588,6 +1562,7 @@ function ExpandedFork({
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
+            overflowY: 'auto',
             background: '#0d0e11',
           }}
         >
