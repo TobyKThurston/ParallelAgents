@@ -46,6 +46,8 @@ type ForkNode = {
   frameB64?: string
   frameIsFinal?: boolean
   thoughts?: AgentThought[]
+  /** Computed at render time: how many forks descend directly from this one. */
+  childCount?: number
 }
 
 type RootNode = {
@@ -130,24 +132,52 @@ function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
 function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
   const c = STATUS_COLOR[data.status]
   const isPulsing = data.status === 'navigating' || data.status === 'acting'
+  const isTrunk = (data.childCount ?? 0) > 0
+  const trunkAccent = '#a78bfa'
   return (
     <div
       style={{
         background: c.bg,
-        border: `1px solid ${c.border}`,
+        border: `${isTrunk ? '2px' : '1px'} solid ${isTrunk ? trunkAccent : c.border}`,
         borderRadius: 10,
         padding: '0.75rem 0.85rem 0.85rem',
         color: '#ececee',
         width: 340,
         fontFamily: 'var(--font-sans), system-ui',
         boxShadow: selected
-          ? `0 0 0 2px ${c.border}55, 0 10px 30px rgba(0,0,0,0.45)`
+          ? `0 0 0 2px ${trunkAccent}66, 0 10px 30px rgba(0,0,0,0.45)`
+          : isTrunk
+          ? `0 0 28px ${trunkAccent}40, 0 10px 30px rgba(0,0,0,0.5)`
           : isPulsing
           ? `0 0 24px ${c.border}55`
           : '0 6px 18px rgba(0,0,0,0.35)',
         transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+        position: 'relative',
       }}
     >
+      {isTrunk && (
+        <div
+          style={{
+            position: 'absolute',
+            top: -10,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: trunkAccent,
+            color: '#0a0b0d',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: '0.1em',
+            padding: '2px 8px',
+            borderRadius: 3,
+            textTransform: 'uppercase',
+            boxShadow: `0 4px 12px ${trunkAccent}55`,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          ↳ FORK POINT · spawned {data.childCount}
+        </div>
+      )}
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
       <div
@@ -382,11 +412,11 @@ function TreeInner({
 
   const { nodes, edges } = useMemo(() => {
     const SPACING_X = 380
-    const LEVEL_Y = 440
+    const LEVEL_Y = 460
     const NODE_ANCHOR_OFFSET_X = -170 // fork node center ≈ position.x + 170 (node is 340 wide)
+    const TRUNK_COLOR = '#a78bfa'
 
-    // Build parent → children adjacency so phase 2 forks hang off phase 1's
-    // control fork instead of all branching off the root.
+    // Build parent → children adjacency.
     const childrenOf = new Map<string, ForkNode[]>()
     for (const f of forks) {
       const parent = f.parentForkId ?? 'root'
@@ -394,21 +424,29 @@ function TreeInner({
       childrenOf.get(parent)!.push(f)
     }
 
-    // Position nodes recursively: each parent's anchor-x becomes the center of
-    // its children's row one level below. Parents above their children means the
-    // tree grows visually downward from the fork point.
+    // For each parent, sort children so the one with its OWN descendants
+    // (the "trunk" fork) sits in the middle of the row. Keeps the trunk
+    // vertically aligned beneath its parent, so phase-2 forks visually descend
+    // straight down from the phase-1 control fork instead of sprawling sideways.
+    function sortForLayout(kids: ForkNode[]): ForkNode[] {
+      const trunk = kids.find((k) => (childrenOf.get(k.id)?.length ?? 0) > 0)
+      if (!trunk || kids.length < 2) return kids
+      const others = kids.filter((k) => k.id !== trunk.id)
+      const middle = Math.floor(kids.length / 2)
+      return [...others.slice(0, middle), trunk, ...others.slice(middle)]
+    }
+
     const pos = new Map<string, { x: number; y: number }>()
-    // Root is wider so its anchor differs; fork-node anchor is offset by 120.
     pos.set('root', { x: -130, y: 0 })
     const anchorX = (id: string) => {
       const p = pos.get(id)!
-      // Root's visual center ≈ p.x + 130; fork's visual center ≈ p.x + 170 (node is 340 wide).
       return id === 'root' ? p.x + 130 : p.x + 170
     }
 
     function placeChildrenOf(parentId: string, depth: number) {
-      const kids = childrenOf.get(parentId)
-      if (!kids || kids.length === 0) return
+      const kidsRaw = childrenOf.get(parentId)
+      if (!kidsRaw || kidsRaw.length === 0) return
+      const kids = sortForLayout(kidsRaw)
       const centerX = anchorX(parentId)
       const startX = centerX - ((kids.length - 1) * SPACING_X) / 2
       kids.forEach((k, i) => {
@@ -430,13 +468,15 @@ function TreeInner({
       selectable: false,
     }
 
+    // Tag each fork with its child count so the node renderer can show the
+    // "↳ FORK POINT" trunk badge.
     const forkNodes: Node[] = forks
       .filter((f) => pos.has(f.id))
       .map((f) => ({
         id: f.id,
         type: 'fork',
         position: pos.get(f.id)!,
-        data: f as any,
+        data: { ...f, childCount: childrenOf.get(f.id)?.length ?? 0 } as any,
         draggable: false,
         selected: f.id === selectedId,
       }))
@@ -444,21 +484,30 @@ function TreeInner({
     const forkEdges: Edge[] = forks
       .filter((f) => pos.has(f.id))
       .map((f) => {
-        const stroke =
+        const parentId = f.parentForkId ?? 'root'
+        // If parent is itself a fork that has children (i.e., it's the trunk),
+        // brand this edge purple + thicker so the eye follows the trunk path.
+        const sourceIsTrunk =
+          parentId !== 'root' && (childrenOf.get(parentId)?.length ?? 0) > 0
+
+        const baseStroke =
           f.status === 'bug' ? '#ff6b6b'
           : f.status === 'passed' ? '#7ddc9c'
           : f.status === 'tolerable' ? '#64748b'
           : f.status === 'error' ? '#c9a8ff'
           : f.status === 'navigating' || f.status === 'acting' ? '#7aa7ff'
           : '#2f333b'
-        const parentId = f.parentForkId ?? 'root'
+
+        const stroke = sourceIsTrunk ? TRUNK_COLOR : baseStroke
+        const strokeWidth = sourceIsTrunk ? 2.5 : 1.5
+
         return {
           id: `e-${parentId}-${f.id}`,
           source: parentId,
           target: f.id,
           type: 'smoothstep',
-          animated: isRunning(f.status),
-          style: { stroke, strokeWidth: 1.5 },
+          animated: isRunning(f.status) || sourceIsTrunk,
+          style: { stroke, strokeWidth },
           markerEnd: { type: MarkerType.ArrowClosed, color: stroke },
         }
       })
