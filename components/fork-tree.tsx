@@ -413,9 +413,10 @@ function TreeInner({
   const prevForkCount = useRef(0)
 
   const { nodes, edges } = useMemo(() => {
-    const SPACING_X = 460
+    const SLOT_W = 380 // horizontal slot per leaf node (incl. gap)
     const LEVEL_Y = 560
-    const NODE_ANCHOR_OFFSET_X = -170 // fork node center ≈ position.x + 170 (node is 340 wide)
+    const ROOT_HALF = 130 // root visual half-width
+    const FORK_HALF = 170 // fork visual half-width (node is 340 wide)
     const TRUNK_COLOR = '#a78bfa'
 
     // Build parent → children adjacency.
@@ -426,40 +427,64 @@ function TreeInner({
       childrenOf.get(parent)!.push(f)
     }
 
-    // For each parent, sort children so the one with its OWN descendants
-    // (the "trunk" fork) sits in the middle of the row. Keeps the trunk
-    // vertically aligned beneath its parent, so phase-2 forks visually descend
-    // straight down from the phase-1 control fork instead of sprawling sideways.
+    // Bottom-up: each leaf takes 1 slot; each parent takes the sum of its
+    // children's slots. This is the key fix — siblings that each have their
+    // own subtree get proportional horizontal space, so the subtrees never
+    // overlap regardless of how deep / wide each branch grows.
+    const subtreeSlots = new Map<string, number>()
+    function computeSlots(id: string): number {
+      if (subtreeSlots.has(id)) return subtreeSlots.get(id)!
+      const kids = childrenOf.get(id) ?? []
+      const slots =
+        kids.length === 0
+          ? 1
+          : kids.reduce((sum, k) => sum + computeSlots(k.id), 0)
+      subtreeSlots.set(id, slots)
+      return slots
+    }
+
+    // Sort: place the trunk-with-the-widest-subtree in the middle of its row
+    // so the deepest path stays roughly under its parent. Other children
+    // distribute around it proportionally.
     function sortForLayout(kids: ForkNode[]): ForkNode[] {
-      const trunk = kids.find((k) => (childrenOf.get(k.id)?.length ?? 0) > 0)
-      if (!trunk || kids.length < 2) return kids
-      const others = kids.filter((k) => k.id !== trunk.id)
+      if (kids.length < 2) return kids
+      const widest = [...kids].sort(
+        (a, b) => (subtreeSlots.get(b.id) ?? 1) - (subtreeSlots.get(a.id) ?? 1)
+      )[0]
+      const widestSlots = subtreeSlots.get(widest.id) ?? 1
+      // Only relocate-to-middle if there's a clearly widest subtree
+      if (widestSlots <= 1) return kids
+      const others = kids.filter((k) => k.id !== widest.id)
       const middle = Math.floor(kids.length / 2)
-      return [...others.slice(0, middle), trunk, ...others.slice(middle)]
+      return [...others.slice(0, middle), widest, ...others.slice(middle)]
     }
 
     const pos = new Map<string, { x: number; y: number }>()
-    pos.set('root', { x: -130, y: 0 })
-    const anchorX = (id: string) => {
-      const p = pos.get(id)!
-      return id === 'root' ? p.x + 130 : p.x + 170
+
+    // Place a node at a given visual center, then recursively allocate
+    // each child a slice of space proportional to its subtree's slot count.
+    function place(id: string, centerX: number, depth: number) {
+      const halfW = id === 'root' ? ROOT_HALF : FORK_HALF
+      pos.set(id, { x: centerX - halfW, y: depth * LEVEL_Y })
+
+      const kidsRaw = childrenOf.get(id) ?? []
+      if (kidsRaw.length === 0) return
+      const kids = sortForLayout(kidsRaw)
+
+      const totalSlots = kids.reduce((s, k) => s + (subtreeSlots.get(k.id) ?? 1), 0)
+      const totalWidth = totalSlots * SLOT_W
+      let cursor = centerX - totalWidth / 2
+      for (const k of kids) {
+        const kSlots = subtreeSlots.get(k.id) ?? 1
+        const kWidth = kSlots * SLOT_W
+        const kCenter = cursor + kWidth / 2
+        place(k.id, kCenter, depth + 1)
+        cursor += kWidth
+      }
     }
 
-    function placeChildrenOf(parentId: string, depth: number) {
-      const kidsRaw = childrenOf.get(parentId)
-      if (!kidsRaw || kidsRaw.length === 0) return
-      const kids = sortForLayout(kidsRaw)
-      const centerX = anchorX(parentId)
-      const startX = centerX - ((kids.length - 1) * SPACING_X) / 2
-      kids.forEach((k, i) => {
-        pos.set(k.id, {
-          x: startX + i * SPACING_X + NODE_ANCHOR_OFFSET_X,
-          y: depth * LEVEL_Y,
-        })
-      })
-      for (const k of kids) placeChildrenOf(k.id, depth + 1)
-    }
-    placeChildrenOf('root', 1)
+    computeSlots('root')
+    place('root', 0, 0)
 
     const rootNode: Node = {
       id: 'root',
