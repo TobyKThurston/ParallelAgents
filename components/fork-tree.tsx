@@ -358,38 +358,98 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
           </span>
         )}
       </div>
-      {data.thoughts && data.thoughts.length > 0 && (() => {
-        const latest = data.thoughts[data.thoughts.length - 1]
-        const verb =
-          latest.type === 'click' ? `click ${latest.selector ?? ''}`
-          : latest.type === 'fill' ? `fill ${latest.selector ?? ''}`
-          : latest.type === 'press' ? `press ${latest.key ?? ''}`
-          : latest.type === 'eval' ? 'eval'
-          : latest.type === 'spawn' ? `spawn ×${latest.spawnCount ?? '?'}`
-          : latest.type === 'done' ? `done · ${latest.verdict ?? ''}`
-          : latest.type
-        return (
+      {data.thoughts && data.thoughts.length > 0 && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '8px 10px 6px',
+            border: '1px solid #1d1f25',
+            borderRadius: 5,
+            background: '#0a0b0d',
+          }}
+        >
           <div
             style={{
-              marginTop: 8,
-              padding: '6px 8px',
-              border: '1px solid #1d1f25',
-              borderRadius: 4,
-              background: '#0a0b0d',
               fontFamily: 'var(--font-mono), monospace',
-              fontSize: 10,
-              color: '#9ea3ad',
-              lineHeight: 1.45,
+              fontSize: 9,
+              color: '#5a5f69',
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              marginBottom: 6,
+              display: 'flex',
+              justifyContent: 'space-between',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#5a5f69', marginBottom: 2 }}>
-              <span>step {latest.step + 1}</span>
-              <span style={{ color: '#7aa7ff' }}>▸ {verb}</span>
-            </div>
-            <div style={{ color: '#cbd0d9' }}>{latest.reason}</div>
+            <span>Agent log</span>
+            <span>{data.thoughts.length} step{data.thoughts.length === 1 ? '' : 's'}</span>
           </div>
-        )
-      })()}
+          {data.thoughts.map((t, i) => {
+            const verbColor =
+              t.type === 'click' ? '#7aa7ff'
+              : t.type === 'fill' ? '#fbbf24'
+              : t.type === 'press' ? '#7dd3fc'
+              : t.type === 'eval' ? '#c9a8ff'
+              : t.type === 'spawn' ? '#a78bfa'
+              : t.type === 'done' ? (t.verdict === 'bug' ? '#ff6b6b' : t.verdict === 'passed' ? '#7ddc9c' : '#9ea3ad')
+              : '#9ea3ad'
+            const target =
+              t.type === 'click' ? t.selector
+              : t.type === 'fill' ? t.selector
+              : t.type === 'press' ? `${t.selector ?? ''} ${t.key ?? ''}`.trim()
+              : ''
+            const verbLabel =
+              t.type === 'click' ? 'CLICK'
+              : t.type === 'fill' ? 'FILL'
+              : t.type === 'press' ? 'PRESS'
+              : t.type === 'eval' ? 'EVAL'
+              : t.type === 'spawn' ? `SPAWN ×${t.spawnCount ?? '?'}`
+              : t.type === 'done' ? `DONE · ${t.verdict ?? ''}`
+              : t.type.toUpperCase()
+            return (
+              <div
+                key={i}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '14px auto 1fr',
+                  columnGap: 6,
+                  marginBottom: i === data.thoughts!.length - 1 ? 0 : 5,
+                  alignItems: 'baseline',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color: '#5a5f69',
+                    textAlign: 'right',
+                  }}
+                >
+                  {i + 1}.
+                </span>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color: verbColor,
+                    fontWeight: 600,
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  {verbLabel}
+                  {target && (
+                    <span style={{ color: '#9ea3ad', fontWeight: 400, marginLeft: 4 }}>
+                      {target}
+                    </span>
+                  )}
+                </span>
+                <span style={{ fontSize: 11, color: '#cbd0d9', lineHeight: 1.45 }}>
+                  {t.reason}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
       {data.bugDetail && (
         <div
           style={{
