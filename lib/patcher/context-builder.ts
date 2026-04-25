@@ -17,7 +17,7 @@
 
 import { getRun } from '../runs'
 import { resolveRepoConfig } from './repo-config'
-import { sanitizeBody } from './sanitize'
+import { sanitizeBody, sanitizeString } from './sanitize'
 import type { PatcherContext } from './types'
 
 type BuildResult = { ok: true; context: PatcherContext } | { ok: false; reason: string }
@@ -50,6 +50,24 @@ export function buildPatcherContext(runId: string, forkId: string): BuildResult 
 
   const reproduction = thoughts.map((t) => sanitizeBody(t.action) as Record<string, unknown>)
 
+  const networkErrors = (
+    run.events.filter(
+      (e) => e.type === 'network_error' && e.forkId === forkId
+    ) as Array<Extract<typeof run.events[number], { type: 'network_error' }>>
+  ).map((e) => ({
+    method: e.method,
+    url: sanitizeString(e.url),
+    status: e.status,
+    responseBody: e.responseBody ? sanitizeString(e.responseBody) : undefined,
+    timing: { startedAt: e.at, durationMs: 0 },
+  }))
+
+  const consoleErrors = (
+    run.events.filter(
+      (e) => e.type === 'console_error' && e.forkId === forkId
+    ) as Array<Extract<typeof run.events[number], { type: 'console_error' }>>
+  ).map((e) => `[${e.level}] ${sanitizeString(e.message)}`)
+
   // The probe agent's last 'done' verdict reasoning, if it returned one.
   const lastDone = [...thoughts].reverse().find((t) => t.action.type === 'done')
   const verdictReasoning =
@@ -68,8 +86,8 @@ export function buildPatcherContext(runId: string, forkId: string): BuildResult 
       verdictReasoning,
       reproduction,
       bugDetail: forkComplete.bugDetail ?? '',
-      networkErrors: [],
-      consoleErrors: [],
+      networkErrors,
+      consoleErrors,
       targetRepo: repo,
       targetUrl,
     },

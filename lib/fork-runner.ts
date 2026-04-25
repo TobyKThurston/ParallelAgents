@@ -138,14 +138,50 @@ const FALLBACK_INTENTS: Record<string, GeneratedIntent[]> = {
 
 // ---------- Helpers ----------
 
-const mkTracker = (page: Page) => {
-  const stats = { dialogsSeen: 0, httpErrors: 0 }
+// Bound how many error events we persist per fork — protects the in-memory
+// run store from a runaway page that 4xxs hundreds of times.
+const MAX_NETWORK_ERRORS = 20
+const MAX_CONSOLE_ERRORS = 20
+
+const mkTracker = (runId: string, forkId: string, page: Page) => {
+  const stats = { dialogsSeen: 0, httpErrors: 0, networkErrorsCaptured: 0, consoleErrorsCaptured: 0 }
   page.on('dialog', async (d) => {
     stats.dialogsSeen++
     await d.dismiss().catch(() => {})
   })
-  page.on('response', (r) => {
-    if (r.status() >= 500) stats.httpErrors++
+  page.on('response', async (r) => {
+    const status = r.status()
+    if (status >= 500) stats.httpErrors++
+    if (status >= 400 && stats.networkErrorsCaptured < MAX_NETWORK_ERRORS) {
+      stats.networkErrorsCaptured++
+      let body: string | undefined
+      try {
+        const txt = await r.text()
+        body = txt.length > 800 ? txt.slice(0, 800) + '…(truncated)' : txt
+      } catch {}
+      emit(runId, {
+        type: 'network_error',
+        forkId,
+        method: r.request().method(),
+        url: r.url(),
+        status,
+        responseBody: body,
+        at: Date.now(),
+      })
+    }
+  })
+  page.on('console', (msg) => {
+    const t = msg.type()
+    if (t !== 'error' && t !== 'warning') return
+    if (stats.consoleErrorsCaptured >= MAX_CONSOLE_ERRORS) return
+    stats.consoleErrorsCaptured++
+    emit(runId, {
+      type: 'console_error',
+      forkId,
+      level: t,
+      message: msg.text().slice(0, 600),
+      at: Date.now(),
+    })
   })
   return stats
 }
@@ -218,7 +254,7 @@ async function runAgentLoop(opts: {
   spawn?: SpawnRequest
 }> {
   const { runId, forkId, intent, page, ctx, canSpawn } = opts
-  const stats = mkTracker(page)
+  const stats = mkTracker(runId, forkId, page)
   const history: AgentAction[] = []
   let agentVerdict: 'bug' | 'passed' | 'tolerable' | undefined
   let agentReason: string | undefined

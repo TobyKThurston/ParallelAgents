@@ -45,6 +45,18 @@ export type RunEvent =
       bugDetail?: string
     }
   | { type: 'run_complete'; runId: string; bugsFound: number; totalForks: number; at: number }
+  // Per-fork captures fed into the patcher's PatcherContext bundle. Capped per fork
+  // (see MAX_NETWORK_ERRORS / MAX_CONSOLE_ERRORS in fork-runner.ts) to bound memory.
+  | {
+      type: 'network_error'
+      forkId: string
+      method: string
+      url: string
+      status: number
+      responseBody?: string
+      at: number
+    }
+  | { type: 'console_error'; forkId: string; level: 'error' | 'warning'; message: string; at: number }
   // ---- Patcher (human-triggered, fires only when user clicks "Fix this" on a bug fork) ----
   | { type: 'patcher.started'; runId: string; forkId: string; sandboxId?: string; at: number }
   | { type: 'patcher.agent_message'; runId: string; forkId: string; message: string; at: number }
