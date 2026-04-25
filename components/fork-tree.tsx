@@ -1271,10 +1271,10 @@ function ExpandedFork({
           border: '1px solid #23262d',
           borderRadius: 12,
           width: 'min(1280px, 96vw)',
-          maxHeight: '94vh',
+          height: showClaudeSection ? 'min(940px, 94vh)' : 'min(820px, 94vh)',
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 360px',
-          gridTemplateRows: showClaudeSection ? 'minmax(0, 1fr) minmax(0, 38vh)' : 'minmax(0, 1fr)',
+          gridTemplateRows: showClaudeSection ? 'minmax(280px, 1fr) 38vh' : '1fr',
           overflow: 'hidden',
           boxShadow: '0 30px 80px rgba(0,0,0,0.6)',
           fontFamily: 'var(--font-sans), system-ui',
@@ -1763,8 +1763,8 @@ function ExpandedFork({
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
-              maxHeight: '38vh',
               minHeight: 0,
+              overflow: 'hidden',
             }}
           >
             <header
@@ -1772,6 +1772,7 @@ function ExpandedFork({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
+                flexShrink: 0,
               }}
             >
               <span
