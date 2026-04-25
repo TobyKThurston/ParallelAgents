@@ -406,7 +406,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
               : t.type === 'eval' ? 'EVAL'
               : t.type === 'spawn' ? `SPAWN ×${t.spawnCount ?? '?'}`
               : t.type === 'done' ? `DONE · ${t.verdict ?? ''}`
-              : t.type.toUpperCase()
+              : ''
             return (
               <div
                 key={i}

@@ -13,6 +13,7 @@
     "verify-ui": "tsx scripts/verify-ui.ts"
   },
   "devDependencies": {
+    "@types/ms": "^2.1.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
