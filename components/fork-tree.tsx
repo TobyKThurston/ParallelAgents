@@ -30,6 +30,7 @@ const BUG_KIND_COLOR: Record<BugKind, { bg: string; fg: string; label: string }>
 }
 
 const ExpandContext = createContext<((id: string) => void) | null>(null)
+const FixContext = createContext<((id: string) => void) | null>(null)
 
 type AgentThought = {
   step: number
@@ -156,6 +157,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
   const isTrunk = (data.childCount ?? 0) > 0
   const trunkAccent = '#a78bfa'
   const onExpand = useContext(ExpandContext)
+  const onFix = useContext(FixContext)
   return (
     <div
       style={{
@@ -530,6 +532,26 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
           err: {data.error.slice(0, 80)}
         </div>
       )}
+      {data.verdict === 'error' && onFix && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onFix(id) }}
+          style={{
+            marginTop: 8,
+            background: '#1a1227',
+            border: '1px solid #c9a8ff',
+            color: '#e3cffe',
+            borderRadius: 4,
+            padding: '4px 9px',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 10,
+            letterSpacing: '0.06em',
+            cursor: 'pointer',
+            width: '100%',
+          }}
+        >
+          ✦ fix with claude
+        </button>
+      )}
     </div>
   )
 }
@@ -546,12 +568,14 @@ function TreeInner({
   selectedId,
   onSelect,
   onExpand,
+  onFix,
 }: {
   root: RootNode
   forks: ForkNode[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onExpand: (id: string) => void
+  onFix: (id: string) => void
 }) {
   const { fitView } = useReactFlow()
   const prevForkCount = useRef(0)
@@ -698,6 +722,7 @@ function TreeInner({
 
   return (
     <ExpandContext.Provider value={onExpand}>
+     <FixContext.Provider value={onFix}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -724,6 +749,7 @@ function TreeInner({
           style={{ background: '#111215', border: '1px solid #23262d' }}
         />
       </ReactFlow>
+     </FixContext.Provider>
     </ExpandContext.Provider>
   )
 }
@@ -1081,11 +1107,12 @@ export function RunView({ runId }: { runId: string }) {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onExpand={handleExpand}
+              onFix={openFix}
             />
           </ReactFlowProvider>
         </section>
       </div>
-      {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} />}
+      {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} onFix={openFix} />}
       {fixFork && (
         <ClaudeFixModal fork={fixFork} targetUrl={root.targetUrl} onClose={closeFix} />
       )}
@@ -1093,7 +1120,15 @@ export function RunView({ runId }: { runId: string }) {
   )
 }
 
-function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }) {
+function ExpandedFork({
+  fork,
+  onClose,
+  onFix,
+}: {
+  fork: ForkNode
+  onClose: () => void
+  onFix?: (id: string) => void
+}) {
   const c = STATUS_COLOR[fork.status]
   const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
   const thoughts = fork.thoughts ?? []
@@ -1537,6 +1572,26 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
               >
                 err: {fork.error}
               </div>
+            )}
+            {fork.verdict === 'error' && onFix && (
+              <button
+                onClick={() => { onClose(); onFix(fork.id) }}
+                style={{
+                  marginTop: 10,
+                  background: '#1a1227',
+                  border: '1px solid #c9a8ff',
+                  color: '#e3cffe',
+                  borderRadius: 5,
+                  padding: '7px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  letterSpacing: '0.06em',
+                  cursor: 'pointer',
+                  width: '100%',
+                }}
+              >
+                ✦ fix with claude
+              </button>
             )}
           </div>
           <div
