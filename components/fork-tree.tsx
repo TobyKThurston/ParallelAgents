@@ -735,8 +735,16 @@ export function RunView({ runId }: { runId: string }) {
   const [summary, setSummary] = useState<{ bugsFound: number; totalForks: number } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [fixId, setFixId] = useState<string | null>(null)
+  const seenErrorsRef = useRef<Set<string>>(new Set())
+  const dismissedAutoRef = useRef<Set<string>>(new Set())
   const handleExpand = useCallback((id: string) => setExpandedId(id), [])
   const closeExpanded = useCallback(() => setExpandedId(null), [])
+  const openFix = useCallback((id: string) => setFixId(id), [])
+  const closeFix = useCallback(() => {
+    if (fixId) dismissedAutoRef.current.add(fixId)
+    setFixId(null)
+  }, [fixId])
 
   useEffect(() => {
     if (!expandedId) return
@@ -748,6 +756,22 @@ export function RunView({ runId }: { runId: string }) {
   }, [expandedId])
 
   const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
+  const fixFork = fixId ? forks.find((f) => f.id === fixId) ?? null : null
+
+  // Auto-open the fix-with-Claude modal the first time a fork's verdict
+  // becomes 'error'. We track which ids we've already auto-shown so dismissing
+  // doesn't immediately re-pop, and so re-renders don't replay old errors.
+  useEffect(() => {
+    for (const f of forks) {
+      if (f.verdict !== 'error') continue
+      if (seenErrorsRef.current.has(f.id)) continue
+      seenErrorsRef.current.add(f.id)
+      if (!fixId && !dismissedAutoRef.current.has(f.id)) {
+        setFixId(f.id)
+        break
+      }
+    }
+  }, [forks, fixId])
 
   useEffect(() => {
     const es = new EventSource(`/api/runs/${runId}/stream`)
@@ -1007,6 +1031,30 @@ export function RunView({ runId }: { runId: string }) {
                       </span>
                     </div>
                   )}
+                  {f.verdict === 'error' && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); openFix(f.id) }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); openFix(f.id) } }}
+                      style={{
+                        marginTop: 6,
+                        alignSelf: 'flex-start',
+                        background: '#1a1227',
+                        border: '1px solid #c9a8ff',
+                        color: '#e3cffe',
+                        borderRadius: 4,
+                        padding: '3px 8px',
+                        fontFamily: 'var(--font-mono), monospace',
+                        fontSize: 10,
+                        letterSpacing: '0.06em',
+                        cursor: 'pointer',
+                        display: 'inline-block',
+                      }}
+                    >
+                      ✦ fix with claude
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -1038,6 +1086,9 @@ export function RunView({ runId }: { runId: string }) {
         </section>
       </div>
       {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} />}
+      {fixFork && (
+        <ClaudeFixModal fork={fixFork} targetUrl={root.targetUrl} onClose={closeFix} />
+      )}
     </div>
   )
 }
@@ -1589,6 +1640,267 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
 function shortId(id: string): string {
   if (id.length <= 10) return id
   return `${id.slice(0, 4)}…${id.slice(-4)}`
+}
+
+function buildClaudePrompt(fork: ForkNode, targetUrl?: string): string {
+  const lines: string[] = []
+  lines.push(
+    'A Playwright-driven AI agent crashed mid-run. Help me figure out the root cause and propose a fix.',
+    '',
+    '## Error',
+    '```',
+    fork.error ?? '(no error message captured)',
+    '```',
+    '',
+    '## Fork context',
+    `- strategy: ${fork.strategyName}`,
+    `- intent: ${fork.description}`,
+    `- target URL: ${targetUrl ?? '(unknown)'}`,
+    `- fork id: ${fork.id}`,
+    `- duration before crash: ${typeof fork.durMs === 'number' ? `${fork.durMs}ms` : 'unknown'}`,
+  )
+  if (fork.parentForkId) lines.push(`- parent fork: ${fork.parentForkId}`)
+
+  const thoughts = fork.thoughts ?? []
+  lines.push('', `## Action history (${thoughts.length} step${thoughts.length === 1 ? '' : 's'})`)
+  if (thoughts.length === 0) {
+    lines.push('(no actions executed before the crash)')
+  } else {
+    thoughts.forEach((t, i) => {
+      const head =
+        t.type === 'click' ? `click ${t.selector ?? '?'}`
+        : t.type === 'fill' ? `fill ${t.selector ?? '?'} = ${JSON.stringify(t.value ?? '')}`
+        : t.type === 'press' ? `press ${t.key ?? '?'} on ${t.selector ?? '?'}`
+        : t.type === 'eval' ? 'eval'
+        : t.type === 'spawn' ? `spawn x${t.spawnCount ?? '?'}`
+        : t.type === 'done' ? `done · ${t.verdict ?? ''}`
+        : t.type
+      lines.push(`${i + 1}. [${head}] ${t.reason}`)
+      if (t.code) lines.push('   code:', '   ```', ...t.code.split('\n').map((l) => `   ${l}`), '   ```')
+    })
+  }
+
+  lines.push(
+    '',
+    '## What I need',
+    '- Most likely root cause of the Playwright failure (selector, timing, navigation, network, stale DOM, etc.)',
+    '- A concrete code/config change to fix or harden against it',
+    '- If the error looks like a real bug in the target app, call that out',
+  )
+  return lines.join('\n')
+}
+
+function ClaudeFixModal({
+  fork,
+  targetUrl,
+  onClose,
+}: {
+  fork: ForkNode
+  targetUrl?: string
+  onClose: () => void
+}) {
+  const prompt = useMemo(() => buildClaudePrompt(fork, targetUrl), [fork, targetUrl])
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(prompt)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {}
+  }, [prompt])
+
+  const claudeUrl = `https://claude.ai/new?q=${encodeURIComponent(prompt)}`
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1100,
+        background: 'rgba(6,7,9,0.85)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'grid',
+        placeItems: 'center',
+        padding: '4vh 4vw',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(820px, 100%)',
+          maxHeight: '92vh',
+          background: '#0d0e11',
+          border: '1px solid #2a1740',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(167,139,250,0.18)',
+          borderRadius: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          color: '#ececee',
+        }}
+      >
+        <header
+          style={{
+            padding: '0.95rem 1.1rem',
+            borderBottom: '1px solid #1d1f25',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 2,
+              background: '#c9a8ff',
+              boxShadow: '0 0 8px #c9a8ff',
+            }}
+          />
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 10,
+                color: '#a78bfa',
+                letterSpacing: '0.14em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Fork errored · fix with Claude
+            </div>
+            <div style={{ fontSize: 14, marginTop: 3, fontWeight: 500 }}>
+              {fork.strategyName}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent',
+              border: '1px solid #2a2c32',
+              color: '#9ea3ad',
+              borderRadius: 4,
+              padding: '4px 10px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11,
+              cursor: 'pointer',
+            }}
+          >
+            esc
+          </button>
+        </header>
+
+        <div
+          style={{
+            padding: '0.9rem 1.1rem 0.5rem',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 11,
+            color: '#e3cffe',
+            background: '#120c1c',
+            borderBottom: '1px solid #1d1f25',
+            wordBreak: 'break-word',
+            lineHeight: 1.5,
+            maxHeight: 120,
+            overflowY: 'auto',
+          }}
+        >
+          {fork.error ?? '(no error message)'}
+        </div>
+
+        <div style={{ padding: '0.9rem 1.1rem', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 10,
+              color: '#5a5f69',
+              textTransform: 'uppercase',
+              letterSpacing: '0.14em',
+              marginBottom: 6,
+            }}
+          >
+            Prompt for Claude
+          </div>
+          <textarea
+            readOnly
+            value={prompt}
+            style={{
+              flex: 1,
+              minHeight: 220,
+              maxHeight: '40vh',
+              width: '100%',
+              resize: 'vertical',
+              background: '#06070a',
+              border: '1px solid #1d1f25',
+              borderRadius: 6,
+              color: '#cbd0d9',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              padding: 10,
+              outline: 'none',
+            }}
+          />
+        </div>
+
+        <footer
+          style={{
+            padding: '0.85rem 1.1rem',
+            borderTop: '1px solid #1d1f25',
+            display: 'flex',
+            gap: 8,
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+          }}
+        >
+          <button
+            onClick={copy}
+            style={{
+              background: copied ? '#1a2e1f' : '#15151a',
+              border: `1px solid ${copied ? '#7ddc9c' : '#2a2c32'}`,
+              color: copied ? '#7ddc9c' : '#cbd0d9',
+              borderRadius: 5,
+              padding: '7px 14px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 12,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            {copied ? '✓ copied' : 'copy prompt'}
+          </button>
+          <a
+            href={claudeUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              background: '#a78bfa',
+              border: '1px solid #a78bfa',
+              color: '#0a0b0d',
+              borderRadius: 5,
+              padding: '7px 14px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            open in claude.ai →
+          </a>
+        </footer>
+      </div>
+    </div>
+  )
 }
 
 export const ForkTreeViewer = RunView
