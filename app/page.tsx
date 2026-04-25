@@ -3,33 +3,6 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
-const STRATEGIES = [
-  {
-    name: 'control-normal-submit',
-    color: '#7ddc9c',
-    kind: 'baseline',
-    blurb: 'Fills the form correctly, submits once. Sets the expected order count.',
-  },
-  {
-    name: 'race-double-submit',
-    color: '#ff6b6b',
-    kind: 'concurrency',
-    blurb: 'Fires two submits back-to-back. Probes for missing idempotency.',
-  },
-  {
-    name: 'validation-missing-email',
-    color: '#fbbf24',
-    kind: 'input',
-    blurb: 'Omits a required field. Checks that the server still enforces it.',
-  },
-  {
-    name: 'injection-xss-in-name',
-    color: '#c9a8ff',
-    kind: 'escaping',
-    blurb: 'Injects a payload into name. Looks for unescaped reflection on success.',
-  },
-]
-
 export default function Home() {
   const router = useRouter()
   const [starting, setStarting] = useState(false)
@@ -64,101 +37,109 @@ export default function Home() {
 
   return (
     <div className="landing">
+      <div className="ambient-grid" aria-hidden="true" />
+
       <nav className="top-nav">
         <div className="brand">
-          ◆ <strong>Parallel Agents</strong>
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14">
+              <path
+                d="M2 8 L7 8 M7 8 L13 3 M7 8 L13 8 M7 8 L13 13"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                fill="none"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
+          <strong>Parallel Agents</strong>
         </div>
         <div className="env-chip">
-          <span className="dot" /> ready · local · v0.1
+          <span className="dot" /> ready
         </div>
       </nav>
 
-      <main className="landing-main">
-        <section className="brief">
-          <div className="section-label">01 · Brief</div>
-          <h1>
-            Four browsers, one shared state,<br />
-            <em>every</em> reality at once.
-          </h1>
-          <p>
-            A normal test walks one path. Parallel Agents warms a real browser
-            to a critical step, snapshots its state, then forks that snapshot
-            across four Chromium windows &mdash; each carrying a different
-            adversarial intent. Race conditions, missing validation and
-            reflected injections fall out of the diff in seconds.
-          </p>
-          <ol className="steps">
-            <li>
-              <span>01</span>
-              <div>Warm a headless browser into the checkout step.</div>
-            </li>
-            <li>
-              <span>02</span>
-              <div>Snapshot cookies, localStorage and origins.</div>
-            </li>
-            <li>
-              <span>03</span>
-              <div>Fan out four headed windows with identical state.</div>
-            </li>
-            <li>
-              <span>04</span>
-              <div>Diff outcomes against the control fork.</div>
-            </li>
-          </ol>
-        </section>
+      <main className="hero">
+        <h1>
+          Four browsers,<br />
+          one shared state,<br />
+          <em>every</em> reality at once.
+        </h1>
 
-        <aside className="plan">
-          <div className="section-label">02 · Target</div>
-          <dl className="spec">
-            <dt>app</dt>
-            <dd>buggy-cart · localhost</dd>
-            <dt>warmup</dt>
-            <dd>add 2 items · open checkout</dd>
-            <dt>forks</dt>
-            <dd>4 · headed Chromium, 2×2 grid</dd>
-            <dt>budget</dt>
-            <dd>~30 seconds</dd>
-          </dl>
+        <ForkDiagram />
 
-          <div className="section-label" style={{ marginTop: '1.75rem' }}>
-            03 · Strategies
-          </div>
-          <ul className="strategy-list">
-            {STRATEGIES.map((s) => (
-              <li key={s.name}>
-                <span className="chip" style={{ background: s.color, color: s.color }} />
-                <div>
-                  <div className="mono">{s.name}</div>
-                  <div className="muted">{s.blurb}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </aside>
-      </main>
+        <p className="tagline">snapshot · fork · diff</p>
 
-      <footer className="landing-footer">
         <div className="cta-row">
           <button className="begin-btn" onClick={startRun} disabled={starting}>
             {starting ? (
               <>
-                <span className="spinner" /> spawning forks…
+                <span className="spinner" /> spawning…
               </>
             ) : (
               <>
-                Begin probe <span className="arrow">→</span>
+                Start <span className="arrow">→</span>
               </>
             )}
           </button>
           <span className="kbd-hint">
-            press <kbd>↵</kbd> to start
+            <kbd>↵</kbd>
           </span>
         </div>
-        <div className="warn">
-          4 Chromium windows will open on-screen during the run &mdash;
-          arrange monitors accordingly.
+      </main>
+
+      <footer className="landing-footer">
+        <div className="built-with">
+          <span className="bw-item">vercel sandbox</span>
+          <span className="bw-sep">·</span>
+          <span className="bw-item">playwright</span>
+          <span className="bw-sep">·</span>
+          <span className="bw-item">openai</span>
+          <span className="bw-sep">·</span>
+          <span className="bw-item">chromium</span>
         </div>
       </footer>
     </div>
+  )
+}
+
+function ForkDiagram() {
+  return (
+    <svg
+      viewBox="0 0 380 260"
+      className="fork-diagram"
+      role="img"
+      aria-label="One snapshot fans out into four parallel forks"
+    >
+      <g className="fork-origin">
+        <rect x="6" y="120" width="44" height="20" rx="4" />
+        <text x="28" y="134" textAnchor="middle">snap</text>
+      </g>
+
+      <path d="M 50 130 L 152 130" className="fork-trunk" />
+      <circle cx="152" cy="130" r="3" className="fork-split-node" />
+
+      <path d="M 152 130 C 200 130, 210 30, 268 30" className="fork-branch b1" />
+      <path d="M 152 130 C 200 130, 210 96, 268 96" className="fork-branch b2" />
+      <path d="M 152 130 C 200 130, 210 164, 268 164" className="fork-branch b3" />
+      <path d="M 152 130 C 200 130, 210 230, 268 230" className="fork-branch b4" />
+
+      <g className="fork-tip t1">
+        <circle cx="268" cy="30" r="5" />
+        <text x="282" y="34">control</text>
+      </g>
+      <g className="fork-tip t2">
+        <circle cx="268" cy="96" r="5" />
+        <text x="282" y="100">race</text>
+      </g>
+      <g className="fork-tip t3">
+        <circle cx="268" cy="164" r="5" />
+        <text x="282" y="168">validation</text>
+      </g>
+      <g className="fork-tip t4">
+        <circle cx="268" cy="230" r="5" />
+        <text x="282" y="234">injection</text>
+      </g>
+    </svg>
   )
 }
