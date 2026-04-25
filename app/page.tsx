@@ -57,7 +57,7 @@ export default function Home() {
               />
             </svg>
           </span>
-          <strong>Parallel Agents</strong>
+          <strong>vibe check</strong>
         </div>
         <div className="env-chip">
           <span className="dot" /> ready
@@ -135,7 +135,7 @@ function ForkDiagram() {
       viewBox="0 0 380 260"
       className="fork-diagram"
       role="img"
-      aria-label="One snapshot fans out into a swarm of parallel agents"
+      aria-label="One snapshot fans out into a swarm of vibe check agents"
     >
       <g className="fork-origin">
         <rect x="6" y="120" width="44" height="20" rx="4" />
