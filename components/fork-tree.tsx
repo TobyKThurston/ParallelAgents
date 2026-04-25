@@ -1346,10 +1346,12 @@ function ExpandedFork({
             style={{
               flex: 1,
               minHeight: 0,
+              minWidth: 0,
               position: 'relative',
               background: '#000',
               display: 'grid',
               placeItems: 'center',
+              overflow: 'hidden',
             }}
           >
             {currentFrame ? (
@@ -1358,8 +1360,10 @@ function ExpandedFork({
                 alt={fork.strategyName}
                 draggable={false}
                 style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
                   objectFit: 'contain',
                   display: 'block',
                 }}
