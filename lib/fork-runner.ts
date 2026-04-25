@@ -253,7 +253,7 @@ async function runAgentLoop(opts: {
     }
 
     history.push(action)
-    emit(runId, { type: 'agent_thought', forkId, step, action })
+    emit(runId, { type: 'agent_thought', forkId, step, action, frameB64: screenshotB64 })
 
     if (action.type === 'done') {
       agentVerdict = action.verdict

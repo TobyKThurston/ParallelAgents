@@ -29,6 +29,8 @@ type AgentThought = {
   code?: string
   verdict?: 'bug' | 'passed' | 'tolerable'
   spawnCount?: number
+  /** Screenshot the agent saw before this step's action — used by replay scrubber. */
+  frameB64?: string
 }
 
 type ForkNode = {
@@ -759,6 +761,7 @@ export function RunView({ runId }: { runId: string }) {
                   code: 'code' in a ? a.code : undefined,
                   verdict: 'verdict' in a ? a.verdict : undefined,
                   spawnCount: a.type === 'spawn' ? a.intents.length : undefined,
+                  frameB64: evt.frameB64,
                 }
                 return { ...f, thoughts: [...(f.thoughts ?? []), t] }
               })
@@ -989,6 +992,58 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
   const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
   const thoughts = fork.thoughts ?? []
 
+  // Build the replay timeline: one frame per agent step (the screenshot the
+  // agent saw BEFORE its action), then a final freeze frame after everything.
+  const replayFrames = useMemo(() => {
+    const out: { frameB64?: string; label: string; thought?: AgentThought }[] = []
+    thoughts.forEach((t, i) => {
+      out.push({
+        frameB64: t.frameB64,
+        label: `step ${i + 1} · ${t.type}`,
+        thought: t,
+      })
+    })
+    if (fork.frameB64) {
+      out.push({
+        frameB64: fork.frameB64,
+        label: fork.frameIsFinal ? 'final' : 'live',
+      })
+    }
+    return out
+  }, [thoughts, fork.frameB64, fork.frameIsFinal])
+
+  const lastIdx = Math.max(0, replayFrames.length - 1)
+  const [step, setStep] = useState(lastIdx)
+  const [playing, setPlaying] = useState(false)
+
+  // Snap to the latest frame as new ones stream in (unless user is scrubbing)
+  const isAtEndRef = useRef(true)
+  useEffect(() => {
+    if (isAtEndRef.current) setStep(lastIdx)
+  }, [lastIdx])
+  useEffect(() => {
+    isAtEndRef.current = step === lastIdx
+  }, [step, lastIdx])
+
+  // Auto-play: advance one frame per ~900ms
+  useEffect(() => {
+    if (!playing) return
+    const id = setInterval(() => {
+      setStep((s) => {
+        if (s >= lastIdx) {
+          setPlaying(false)
+          return s
+        }
+        return s + 1
+      })
+    }, 900)
+    return () => clearInterval(id)
+  }, [playing, lastIdx])
+
+  const currentFrame = replayFrames[step]?.frameB64 ?? fork.frameB64
+  const currentThought =
+    step < thoughts.length ? thoughts[step] : undefined
+
   return (
     <div
       onClick={onClose}
@@ -1091,9 +1146,9 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
               placeItems: 'center',
             }}
           >
-            {fork.frameB64 ? (
+            {currentFrame ? (
               <img
-                src={`data:image/jpeg;base64,${fork.frameB64}`}
+                src={`data:image/jpeg;base64,${currentFrame}`}
                 alt={fork.strategyName}
                 draggable={false}
                 style={{
@@ -1149,7 +1204,145 @@ function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }
                 live
               </div>
             )}
+            {/* Caption overlay: which step we're viewing in the replay */}
+            {currentThought && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,
+                  right: 12,
+                  padding: '8px 12px',
+                  background: 'rgba(6,7,9,0.78)',
+                  border: '1px solid #1d1f25',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: '#cbd0d9',
+                  lineHeight: 1.45,
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color:
+                      currentThought.type === 'click' ? '#7aa7ff'
+                      : currentThought.type === 'fill' ? '#fbbf24'
+                      : currentThought.type === 'press' ? '#7dd3fc'
+                      : currentThought.type === 'eval' ? '#c9a8ff'
+                      : currentThought.type === 'spawn' ? '#a78bfa'
+                      : currentThought.type === 'done'
+                          ? (currentThought.verdict === 'bug' ? '#ff6b6b' : currentThought.verdict === 'passed' ? '#7ddc9c' : '#9ea3ad')
+                      : '#9ea3ad',
+                    fontWeight: 600,
+                    letterSpacing: '0.06em',
+                    textTransform: 'uppercase',
+                    marginRight: 8,
+                  }}
+                >
+                  {currentThought.type === 'spawn'
+                    ? `SPAWN ×${currentThought.spawnCount ?? '?'}`
+                    : currentThought.type === 'done'
+                      ? `DONE · ${currentThought.verdict ?? ''}`
+                      : currentThought.type.toUpperCase()}
+                  {currentThought.selector && (
+                    <span style={{ color: '#9ea3ad', marginLeft: 4 }}>{currentThought.selector}</span>
+                  )}
+                </span>
+                {currentThought.reason}
+              </div>
+            )}
           </div>
+          {/* Replay timeline */}
+          {replayFrames.length > 0 && (
+            <div
+              style={{
+                padding: '0.65rem 1rem',
+                borderTop: '1px solid #1d1f25',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                background: '#0b0c0f',
+              }}
+            >
+              <button
+                onClick={() => setPlaying((p) => !p)}
+                disabled={replayFrames.length < 2}
+                aria-label={playing ? 'pause' : 'play'}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: playing ? '#a78bfa' : '#15151a',
+                  color: playing ? '#0a0b0d' : '#cbd0d9',
+                  fontSize: 14,
+                  display: 'grid',
+                  placeItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                {playing ? '❚❚' : '▶'}
+              </button>
+              <button
+                onClick={() => { setPlaying(false); setStep((s) => Math.max(0, s - 1)) }}
+                disabled={step <= 0}
+                aria-label="prev"
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: '#15151a',
+                  color: step <= 0 ? '#4a4a52' : '#cbd0d9',
+                  fontSize: 11,
+                  flexShrink: 0,
+                }}
+              >
+                ◀
+              </button>
+              <button
+                onClick={() => { setPlaying(false); setStep((s) => Math.min(lastIdx, s + 1)) }}
+                disabled={step >= lastIdx}
+                aria-label="next"
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: '#15151a',
+                  color: step >= lastIdx ? '#4a4a52' : '#cbd0d9',
+                  fontSize: 11,
+                  flexShrink: 0,
+                }}
+              >
+                ▶
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={lastIdx}
+                value={step}
+                onChange={(e) => { setPlaying(false); setStep(parseInt(e.target.value, 10)) }}
+                style={{ flex: 1, accentColor: '#a78bfa' }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  color: '#9ea3ad',
+                  letterSpacing: '0.06em',
+                  flexShrink: 0,
+                  minWidth: 90,
+                  textAlign: 'right',
+                }}
+              >
+                {replayFrames[step]?.label ?? `${step + 1} / ${replayFrames.length}`}
+              </span>
+            </div>
+          )}
         </div>
         <aside
           style={{

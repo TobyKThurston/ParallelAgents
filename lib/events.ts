@@ -22,6 +22,8 @@ export type RunEvent =
       type: 'agent_thought'
       forkId: string
       step: number
+      /** Screenshot the agent saw at the START of this step, before its action ran. Used for replay. */
+      frameB64?: string
       action:
         | { type: 'click'; selector: string; reason: string }
         | { type: 'fill'; selector: string; value: string; reason: string }
