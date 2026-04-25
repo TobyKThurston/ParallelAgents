@@ -27,6 +27,7 @@ import {
   hasApiKey,
   pickNextAction,
   generateIntents,
+  discoverForkPoints,
   type AgentAction,
   type BugKind,
   type GeneratedIntent,
@@ -48,28 +49,6 @@ type ForkPoint = {
   countStateKey?: 'issues' | 'orders'
 }
 
-const forkPoints: ForkPoint[] = [
-  {
-    id: 'fp-issue-create',
-    index: 0,
-    title: 'Phase 1 · /issues/new',
-    initialUrl: '/issues/new',
-    context:
-      'A SaaS issue creation form. Inputs: title (required), description (textarea), priority dropdown (low/med/high), assignee. Submitting POSTs to /api/issues which creates a tracked issue. Empty title makes the server crash. The /issues list page renders titles via innerHTML (XSS reflection vulnerability). The endpoint has no idempotency key.',
-    countStateKey: 'issues',
-  },
-  {
-    id: 'fp-billing',
-    index: 1,
-    title: 'Phase 2 · /billing',
-    initialUrl: '/billing',
-    context:
-      'A billing/checkout page for upgrading to the Pro plan. Inputs: seats (numeric, default 5, $10 each), coupon code, email, cardholder name, card number. Submits to /api/billing/checkout. Special coupons: FREE100 = 100% off; SAVE10 = 10% off. Empty email crashes the server. The success page reflects ?name= via innerHTML.',
-    chainsFrom: 'fp-issue-create',
-    countStateKey: 'orders',
-  },
-]
-
 // ---------- Browser config ----------
 
 // Real desktop viewport — pages render like a normal full-screen webpage.
@@ -77,66 +56,38 @@ const VIEWPORT = { width: 1280, height: 800 }
 const SLOW_MO_MS = 150
 const MAX_AGENT_STEPS = 5
 
-const FALLBACK_INTENTS: Record<string, GeneratedIntent[]> = {
-  'fp-issue-create': [
-    {
-      name: 'control-create',
-      banner: '🟢 CONTROL — create one normal issue',
-      bannerColor: '#16a34a',
-      description: 'Fill the title and assignee with reasonable values, click Create exactly once. Verify exactly one issue was created.',
-    },
-    {
-      name: 'race-double-create',
-      banner: '🔴 RACE — double-click create',
-      bannerColor: '#dc2626',
-      description: 'Fill the form normally, then click Create twice in quick succession. Bug if more than one issue is created.',
-    },
-    {
-      name: 'missing-title',
-      banner: '🟡 VALIDATION — submit with empty title',
-      bannerColor: '#ca8a04',
-      description: 'Leave the title field empty and click Create. Bug if the server returns 5xx or accepts the issue.',
-    },
-    {
-      name: 'xss-in-title',
-      banner: '🟣 INJECTION — XSS payload in title',
-      bannerColor: '#9333ea',
-      description: 'Set title to "<img src=x onerror=alert(1)>" and Create. Then visit /issues. Bug if a JS dialog fires (XSS).',
-    },
-  ],
-  'fp-billing': [
-    {
-      name: 'control-pay',
-      banner: '🟢 CONTROL — pay normally',
-      bannerColor: '#16a34a',
-      description: 'Fill all fields with valid values and Pay once. Verify a single order is created.',
-    },
-    {
-      name: 'race-double-pay',
-      banner: '🔴 RACE — concurrent pay',
-      bannerColor: '#dc2626',
-      description: 'Fill the form, then trigger two simultaneous POSTs to /api/billing/checkout. Bug if more than one order is created.',
-    },
-    {
-      name: 'negative-seats',
-      banner: '🟠 OVERFLOW — negative seat count',
-      bannerColor: '#ea580c',
-      description: 'Set seats to -5 and pay. Bug if the total goes negative or the order is accepted.',
-    },
-    {
-      name: 'free100-coupon',
-      banner: '🟣 ABUSE — coupon FREE100',
-      bannerColor: '#9333ea',
-      description: 'Apply coupon FREE100 (100% off) and pay. Bug if total reaches 0 or below without explicit refund.',
-    },
-    {
-      name: 'missing-email',
-      banner: '🟡 VALIDATION — submit with empty email',
-      bannerColor: '#ca8a04',
-      description: 'Leave email blank and Pay. Bug if the server crashes (5xx).',
-    },
-  ],
-}
+// Generic fallback used only when there's no API key or the planner fails.
+// Web-agnostic — these descriptions don't assume any particular app.
+const GENERIC_FALLBACK_INTENTS: GeneratedIntent[] = [
+  {
+    name: 'control-normal',
+    banner: '🟢 CONTROL — complete the obvious flow',
+    bannerColor: '#16a34a',
+    description:
+      'Act like a normal user: identify the most prominent call-to-action, fill any forms with realistic values, and click submit/save once. Verdict passed if you completed the flow without errors.',
+  },
+  {
+    name: 'input-fuzz',
+    banner: '🟠 INPUT FUZZ — break the inputs',
+    bannerColor: '#ea580c',
+    description:
+      'Try adversarial values on every input: 999999, -5, empty strings, oversized text, special chars, emoji. Bug if any produces broken UI state (NaN/Infinity/negative totals/$undefined).',
+  },
+  {
+    name: 'xss-probe',
+    banner: '🟣 XSS — inject a payload',
+    bannerColor: '#9333ea',
+    description:
+      'Find an input that gets reflected back to the user. Inject <img src=x onerror=alert(1)>, submit, navigate to wherever it shows. Bug if a JS dialog fires.',
+  },
+  {
+    name: 'concurrency-stress',
+    banner: '🔴 RACE — concurrent submit',
+    bannerColor: '#dc2626',
+    description:
+      'Find a submit/save action and trigger it twice simultaneously via Promise.all of two fetch() calls. Bug if duplicate records or duplicate confirmations result.',
+  },
+]
 
 // ---------- Helpers ----------
 
@@ -691,10 +642,10 @@ async function runForkPoint(opts: {
       console.log(`[runner ${fp.id}] LLM proposed ${intents.length} intents:`, intents.map((i) => i.name).join(', '))
     } catch (e: any) {
       console.log(`[runner ${fp.id}] generateIntents failed, using fallback:`, e?.message)
-      intents = FALLBACK_INTENTS[fp.id] ?? FALLBACK_INTENTS['fp-issue-create']
+      intents = GENERIC_FALLBACK_INTENTS
     }
   } else {
-    intents = FALLBACK_INTENTS[fp.id] ?? FALLBACK_INTENTS['fp-issue-create']
+    intents = GENERIC_FALLBACK_INTENTS
   }
 
   // Capture the warm storageState so all forks can resume from the same point.
@@ -791,21 +742,76 @@ export async function runForkExperiment(
     slowMo: SLOW_MO_MS,
   })
 
-  // When the user supplied an external URL, we don't know its bug surface — run
-  // a single generic fork point against the root path and let the planner
-  // decide the attack vector from the page itself.
-  const pointsToRun: ForkPoint[] = targetUrl
-    ? [
+  // Discover fork points from the entry page itself. The LLM looks at what's
+  // actually there (forms, mutations, inputs) and proposes 1-4 pages worth
+  // probing. Falls back to the entry URL alone if discovery fails or no API key.
+  let pointsToRun: ForkPoint[]
+  if (useLLM) {
+    let discovered: Awaited<ReturnType<typeof discoverForkPoints>> | undefined
+    try {
+      const reconCtx = await browser.newContext({ viewport: VIEWPORT })
+      const reconPage = await reconCtx.newPage()
+      await reconPage.goto(serverUrl)
+      await reconPage.waitForTimeout(800)
+      const buf = await reconPage.screenshot({ type: 'jpeg', quality: 60 })
+      const dom = await reconPage.content().catch(() => '')
+      await reconCtx.close().catch(() => {})
+
+      discovered = await discoverForkPoints({
+        entryUrl: serverUrl,
+        domSnippet: dom,
+        screenshotB64: buf.toString('base64'),
+      })
+    } catch (e: any) {
+      console.log(`[runner] discover failed (${e?.message?.slice(0, 80) ?? 'unknown'}) — using entry page alone`)
+    }
+
+    if (discovered && discovered.length > 0) {
+      pointsToRun = discovered.map((d, idx) => {
+        // Normalize to a relative path so `serverUrl + initialUrl` works.
+        let path = d.path
+        if (path.startsWith('http')) {
+          try {
+            const u = new URL(path)
+            path = (u.pathname || '/') + u.search + u.hash
+          } catch {
+            path = '/'
+          }
+        } else if (!path.startsWith('/')) {
+          path = '/' + path
+        }
+        return {
+          id: `fp-${d.name}`,
+          index: idx,
+          title: d.title,
+          initialUrl: path,
+          context: d.context,
+          chainsFrom: idx > 0 ? `fp-${discovered![idx - 1].name}` : undefined,
+        }
+      })
+    } else {
+      pointsToRun = [
         {
-          id: 'fp-target',
+          id: 'fp-entry',
           index: 0,
-          title: `Target · ${new URL(targetUrl).pathname || '/'}`,
+          title: `Entry · ${new URL(serverUrl).pathname || '/'}`,
           initialUrl: '/',
           context:
-            'An arbitrary web page supplied by the user. The planner must inspect the screenshot+DOM and propose intents that match what is actually on the page (forms, links, inputs). Do not assume specific endpoints, fields, or routes — observe and adapt.',
+            'The entry page supplied by the user (or default buggy demo). Discovery did not return additional pages — probe this page directly.',
         },
       ]
-    : forkPoints
+    }
+  } else {
+    pointsToRun = [
+      {
+        id: 'fp-entry',
+        index: 0,
+        title: `Entry · ${new URL(serverUrl).pathname || '/'}`,
+        initialUrl: '/',
+        context: 'No API key — running a single fork point against the entry URL with hardcoded fallback intents.',
+      },
+    ]
+  }
 
   // Fresh per-run map of "which fork was the control at each fork point"
   const controlByPoint = new Map<string, string>()
