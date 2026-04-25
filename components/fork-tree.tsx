@@ -1180,7 +1180,14 @@ export function RunView({ runId }: { runId: string }) {
           </ReactFlowProvider>
         </section>
       </div>
-      {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} onFix={openFix} />}
+      {expanded && (
+        <ExpandedFork
+          fork={expanded}
+          targetUrl={root.targetUrl}
+          onClose={closeExpanded}
+          onFix={openFix}
+        />
+      )}
       {fixFork && (
         <ClaudeFixModal fork={fixFork} targetUrl={root.targetUrl} onClose={closeFix} />
       )}
@@ -1190,16 +1197,35 @@ export function RunView({ runId }: { runId: string }) {
 
 function ExpandedFork({
   fork,
+  targetUrl,
   onClose,
   onFix,
 }: {
   fork: ForkNode
+  targetUrl?: string
   onClose: () => void
   onFix?: (id: string) => void
 }) {
   const c = STATUS_COLOR[fork.status]
   const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
   const thoughts = fork.thoughts ?? []
+  const showClaudeSection = fork.verdict === 'bug' || fork.verdict === 'error'
+  const claudePrompt = useMemo(
+    () => (showClaudeSection ? buildClaudePrompt(fork, targetUrl) : ''),
+    [showClaudeSection, fork, targetUrl]
+  )
+  const claudeUrl = useMemo(
+    () => (claudePrompt ? `https://claude.ai/new?q=${encodeURIComponent(claudePrompt)}` : ''),
+    [claudePrompt]
+  )
+  const [promptCopied, setPromptCopied] = useState(false)
+  const copyPrompt = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(claudePrompt)
+      setPromptCopied(true)
+      setTimeout(() => setPromptCopied(false), 1500)
+    } catch {}
+  }, [claudePrompt])
 
   // Build the replay timeline: one frame per agent step (the screenshot the
   // agent saw BEFORE its action), then a final freeze frame after everything.
@@ -1279,6 +1305,7 @@ function ExpandedFork({
           maxHeight: '94vh',
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 360px',
+          gridTemplateRows: showClaudeSection ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)',
           overflow: 'hidden',
           boxShadow: '0 30px 80px rgba(0,0,0,0.6)',
           fontFamily: 'var(--font-sans), system-ui',
@@ -1755,6 +1782,114 @@ function ExpandedFork({
             })}
           </div>
         </aside>
+        {showClaudeSection && (
+          <section
+            style={{
+              gridColumn: '1 / -1',
+              borderTop: '1px solid #2a1740',
+              background: 'linear-gradient(180deg, #0e0814 0%, #0a0710 100%)',
+              padding: '0.9rem 1.1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              maxHeight: '38vh',
+              minHeight: 0,
+            }}
+          >
+            <header
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 2,
+                  background: '#a78bfa',
+                  boxShadow: '0 0 8px #a78bfa',
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 10,
+                  color: '#a78bfa',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.14em',
+                  fontWeight: 600,
+                }}
+              >
+                ✦ Fix with Claude
+              </span>
+              <span style={{ fontSize: 12, color: '#9ea3ad', marginLeft: 4 }}>
+                Copy this prompt or open it in Claude — it has the full repro context.
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                onClick={copyPrompt}
+                style={{
+                  background: promptCopied ? '#1a2e1f' : '#15151a',
+                  border: `1px solid ${promptCopied ? '#7ddc9c' : '#2a2c32'}`,
+                  color: promptCopied ? '#7ddc9c' : '#cbd0d9',
+                  borderRadius: 5,
+                  padding: '6px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {promptCopied ? '✓ copied' : 'copy'}
+              </button>
+              <a
+                href={claudeUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  background: '#a78bfa',
+                  color: '#0a0b0d',
+                  borderRadius: 5,
+                  padding: '6px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  textDecoration: 'none',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                open in claude →
+              </a>
+            </header>
+            <pre
+              style={{
+                margin: 0,
+                padding: '10px 12px',
+                background: '#06070a',
+                border: '1px solid #1d1f25',
+                borderRadius: 6,
+                color: '#cbd0d9',
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                lineHeight: 1.55,
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                flex: 1,
+                minHeight: 0,
+                maxHeight: '32vh',
+              }}
+            >
+              {claudePrompt}
+            </pre>
+          </section>
+        )}
       </div>
     </div>
   )
@@ -1767,27 +1902,51 @@ function shortId(id: string): string {
 
 function buildClaudePrompt(fork: ForkNode, targetUrl?: string): string {
   const lines: string[] = []
+  const isBug = fork.verdict === 'bug'
+  const isError = fork.verdict === 'error'
+
+  if (isBug) {
+    lines.push(
+      'An adversarial QA agent (driving Playwright + GPT-4o-mini) found a real bug in my web app. Help me fix the app.',
+      '',
+      '## What the agent observed',
+    )
+    if (fork.bugKind) lines.push(`- bug kind: ${fork.bugKind}`)
+    if (fork.bugEvidence) lines.push(`- evidence: ${fork.bugEvidence}`)
+    if (fork.bugDetail) lines.push(`- detail: ${fork.bugDetail}`)
+    if (typeof fork.ordersCreated === 'number')
+      lines.push(`- items created during fork: ${fork.ordersCreated}${fork.excess ? ` (+${fork.excess} unexpected)` : ''}`)
+  } else if (isError) {
+    lines.push(
+      'A Playwright-driven AI agent crashed mid-run. Help me figure out the root cause and propose a fix.',
+      '',
+      '## Error',
+      '```',
+      fork.error ?? '(no error message captured)',
+      '```',
+    )
+  } else {
+    lines.push(
+      'An adversarial QA agent finished a fork without finding a definitive bug. Help me reason about whether something subtle was missed.',
+    )
+  }
+
   lines.push(
-    'A Playwright-driven AI agent crashed mid-run. Help me figure out the root cause and propose a fix.',
-    '',
-    '## Error',
-    '```',
-    fork.error ?? '(no error message captured)',
-    '```',
     '',
     '## Fork context',
     `- strategy: ${fork.strategyName}`,
     `- intent: ${fork.description}`,
     `- target URL: ${targetUrl ?? '(unknown)'}`,
     `- fork id: ${fork.id}`,
-    `- duration before crash: ${typeof fork.durMs === 'number' ? `${fork.durMs}ms` : 'unknown'}`,
+    `- verdict: ${fork.verdict ?? 'unknown'}`,
+    `- duration: ${typeof fork.durMs === 'number' ? `${fork.durMs}ms` : 'unknown'}`,
   )
   if (fork.parentForkId) lines.push(`- parent fork: ${fork.parentForkId}`)
 
   const thoughts = fork.thoughts ?? []
   lines.push('', `## Action history (${thoughts.length} step${thoughts.length === 1 ? '' : 's'})`)
   if (thoughts.length === 0) {
-    lines.push('(no actions executed before the crash)')
+    lines.push('(no actions executed)')
   } else {
     thoughts.forEach((t, i) => {
       const head =
@@ -1803,13 +1962,25 @@ function buildClaudePrompt(fork: ForkNode, targetUrl?: string): string {
     })
   }
 
-  lines.push(
-    '',
-    '## What I need',
-    '- Most likely root cause of the Playwright failure (selector, timing, navigation, network, stale DOM, etc.)',
-    '- A concrete code/config change to fix or harden against it',
-    '- If the error looks like a real bug in the target app, call that out',
-  )
+  lines.push('', '## What I need')
+  if (isBug) {
+    lines.push(
+      '- Identify the most likely root cause in my web app (server validation, idempotency, escaping, etc.)',
+      '- Show me a concrete code change (unified diff if possible) that fixes it',
+      '- Note whether this should be fixed on the client, the server, or both — and why',
+    )
+  } else if (isError) {
+    lines.push(
+      '- Most likely root cause of the Playwright failure (selector, timing, navigation, network, stale DOM, etc.)',
+      '- A concrete code/config change to fix or harden against it',
+      '- If the error looks like a real bug in the target app, call that out',
+    )
+  } else {
+    lines.push(
+      '- What the agent might have missed given the action history',
+      '- Suggest follow-up steps to confirm or rule out a bug at this fork point',
+    )
+  }
   return lines.join('\n')
 }
 
