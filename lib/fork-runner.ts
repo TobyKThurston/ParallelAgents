@@ -46,7 +46,50 @@ type ForkPoint = {
   /** id of the prior fork point this one chains from (parent will be that point's control). */
   chainsFrom?: string
   /** What server-side state to count toward "created N items" duplicate detection. */
-  countStateKey?: 'issues' | 'orders'
+  countStateKey?: 'issues' | 'orders' | 'tasks'
+}
+
+// Pinned fork-point catalogs for known demo targets. Used to bypass the
+// LLM discovery pass when we already know the right paths — avoids the
+// "agent navigated to a 404 then hallucinated #title" failure mode.
+const KNOWN_TARGETS: Record<string, ForkPoint[]> = {
+  'riverline-hackathon-test.vercel.app': [
+    {
+      id: 'fp-tasks-new',
+      index: 0,
+      title: 'Create task',
+      initialUrl: '/tasks/new',
+      context:
+        'Task creation form (Riverline). Likely fields include title, description, priority, assignee. Probe for reflected XSS in the title, server crashes on empty inputs, and concurrent-submit duplicate creates.',
+      countStateKey: 'tasks',
+    },
+    {
+      id: 'fp-billing',
+      index: 1,
+      title: 'Billing checkout',
+      initialUrl: '/billing',
+      context:
+        'Plan / billing form (Riverline). Likely fields include seats, coupon, email, name, card. Probe for negative seats, coupon abuse, missing-email crashes, and concurrent-submit duplicate orders.',
+      countStateKey: 'orders',
+      chainsFrom: 'fp-tasks-new',
+    },
+    {
+      id: 'fp-settings',
+      index: 2,
+      title: 'Profile settings',
+      initialUrl: '/settings',
+      context:
+        'Profile / settings page (Riverline). Likely fields include display name and avatar URL. Probe for javascript: URL schemes and reflected payloads in profile fields.',
+    },
+  ],
+}
+
+function pickKnownTargetForkPoints(serverUrl: string): ForkPoint[] | undefined {
+  try {
+    return KNOWN_TARGETS[new URL(serverUrl).hostname]
+  } catch {
+    return undefined
+  }
 }
 
 // ---------- Browser config ----------
@@ -328,7 +371,12 @@ async function evaluateVerdict(
   let itemsCreated = 0
   if (fp.countStateKey) {
     try {
-      const path = fp.countStateKey === 'issues' ? '/api/issues' : '/api/orders'
+      const path =
+        fp.countStateKey === 'issues'
+          ? '/api/issues'
+          : fp.countStateKey === 'tasks'
+            ? '/api/tasks'
+            : '/api/orders'
       const r = await page.evaluate(
         (u) => fetch(u).then((rr) => rr.json()).catch(() => ({})),
         serverUrl + path
@@ -621,11 +669,28 @@ async function runForkPoint(opts: {
   // Warm a context to the fork-point URL and snapshot its state.
   const warmCtx = await browser.newContext({ viewport: VIEWPORT })
   const warmPage = await warmCtx.newPage()
+  let warmStatus: number | undefined
   try {
-    await warmPage.goto(serverUrl + fp.initialUrl)
+    const resp = await warmPage.goto(serverUrl + fp.initialUrl)
+    warmStatus = resp?.status()
     await warmPage.waitForLoadState('domcontentloaded').catch(() => {})
   } catch (e) {
     console.log(`[runner ${fp.id}] warm goto failed:`, (e as Error).message)
+  }
+
+  // If the fork-point URL doesn't actually exist on the target, bail out
+  // cleanly instead of generating intents against a 404 (which causes the
+  // agent to hallucinate selectors like #title that aren't on the page).
+  if (warmStatus !== undefined && warmStatus >= 400) {
+    console.log(`[runner ${fp.id}] warm goto returned HTTP ${warmStatus} — skipping fork point`)
+    await warmCtx.close().catch(() => {})
+    emit(runId, {
+      type: 'phase_complete',
+      phaseId: fp.id,
+      phaseIndex: fp.index,
+      at: Date.now(),
+    })
+    return { bugsFound: 0, controlForkId: undefined, intentsRun: 0 }
   }
 
   // Generate intents from a screenshot + DOM (or fall back).
@@ -747,7 +812,11 @@ export async function runForkExperiment(
   // actually there (forms, mutations, inputs) and proposes 1-4 pages worth
   // probing. Falls back to the entry URL alone if discovery fails or no API key.
   let pointsToRun: ForkPoint[]
-  if (useLLM) {
+  const pinned = pickKnownTargetForkPoints(serverUrl)
+  if (pinned) {
+    console.log(`[runner] using pinned fork points for known target: ${new URL(serverUrl).hostname}`)
+    pointsToRun = pinned
+  } else if (useLLM) {
     let discovered: Awaited<ReturnType<typeof discoverForkPoints>> | undefined
     try {
       const reconCtx = await browser.newContext({ viewport: VIEWPORT })
