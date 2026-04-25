@@ -62,7 +62,7 @@ export default function Home() {
       <main className="hero">
         <h1>
           One snapshot,<br />
-          four browsers,<br />
+          a swarm of agents,<br />
           <em>every</em> bug at once.
         </h1>
 
@@ -109,7 +109,7 @@ function ForkDiagram() {
       viewBox="0 0 380 260"
       className="fork-diagram"
       role="img"
-      aria-label="One snapshot fans out into four parallel forks"
+      aria-label="One snapshot fans out into a swarm of parallel agents"
     >
       <g className="fork-origin">
         <rect x="6" y="120" width="44" height="20" rx="4" />

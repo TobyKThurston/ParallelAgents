@@ -75,7 +75,7 @@ const forkPoints: ForkPoint[] = [
 // Real desktop viewport — pages render like a normal full-screen webpage.
 const VIEWPORT = { width: 1280, height: 800 }
 const SLOW_MO_MS = 150
-const MAX_AGENT_STEPS = 5
+const MAX_AGENT_STEPS = 8
 
 const FALLBACK_INTENTS: Record<string, GeneratedIntent[]> = {
   'fp-issue-create': [
@@ -141,13 +141,16 @@ const FALLBACK_INTENTS: Record<string, GeneratedIntent[]> = {
 // ---------- Helpers ----------
 
 const mkTracker = (page: Page) => {
-  const stats = { dialogsSeen: 0, httpErrors: 0 }
+  const stats = { dialogsSeen: 0, httpErrors: 0, pageErrors: 0 }
   page.on('dialog', async (d) => {
     stats.dialogsSeen++
     await d.dismiss().catch(() => {})
   })
   page.on('response', (r) => {
     if (r.status() >= 500) stats.httpErrors++
+  })
+  page.on('pageerror', () => {
+    stats.pageErrors++
   })
   return stats
 }
@@ -215,7 +218,7 @@ async function runAgentLoop(opts: {
   agentVerdict?: 'bug' | 'passed' | 'tolerable'
   agentReason?: string
   steps: number
-  stats: { dialogsSeen: number; httpErrors: number }
+  stats: { dialogsSeen: number; httpErrors: number; pageErrors: number }
   error?: string
   spawn?: SpawnRequest
 }> {
@@ -232,7 +235,13 @@ async function runAgentLoop(opts: {
     try {
       const buf = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: false })
       screenshotB64 = buf.toString('base64')
-      dom = await page.content().catch(() => '')
+      dom = await page
+        .evaluate(() => {
+          const clone = document.documentElement.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('[data-demo-hint], .demo-hint, style, script, link, noscript').forEach((n) => n.remove())
+          return '<!doctype html>' + clone.outerHTML
+        })
+        .catch(() => '')
     } catch (e) {
       return { steps: step, stats, error: (e as Error).message?.slice(0, 80) }
     }
@@ -332,9 +341,10 @@ async function runAgentLoop(opts: {
 async function evaluateVerdict(
   page: Page,
   fp: ForkPoint,
-  stats: { dialogsSeen: number; httpErrors: number },
+  stats: { dialogsSeen: number; httpErrors: number; pageErrors: number },
   serverUrl: string,
-  agentVerdict?: 'bug' | 'passed' | 'tolerable'
+  agentVerdict?: 'bug' | 'passed' | 'tolerable',
+  agentReason?: string
 ): Promise<{ verdict: 'passed' | 'bug' | 'tolerable'; detail: string; itemsCreated: number }> {
   // Strong signals first.
   if (stats.dialogsSeen > 0) {
@@ -348,6 +358,13 @@ async function evaluateVerdict(
     return {
       verdict: 'bug',
       detail: `server 5xx fired (${stats.httpErrors}× — missing validation)`,
+      itemsCreated: 0,
+    }
+  }
+  if (stats.pageErrors > 0) {
+    return {
+      verdict: 'bug',
+      detail: `unhandled JS error (${stats.pageErrors}×)`,
       itemsCreated: 0,
     }
   }
@@ -389,10 +406,34 @@ async function evaluateVerdict(
     } catch {}
   }
 
+  // Settings-specific: javascript: scheme stored on profile.
+  // After save the settings page reloads, so the persisted value lives in #avatar.
+  if (fp.initialUrl === '/settings') {
+    try {
+      const url = await page.evaluate(() => {
+        const el = document.getElementById('avatar') as HTMLInputElement | null
+        return el?.value ?? ''
+      })
+      if (/^\s*(javascript|data):/i.test(url)) {
+        return { verdict: 'bug', detail: `unsafe avatar scheme stored: ${url.slice(0, 40)}`, itemsCreated }
+      }
+    } catch {}
+  }
+
   if (agentVerdict === 'passed' && itemsCreated === 1) {
     return { verdict: 'passed', detail: `created 1 ${fp.countStateKey ?? 'item'}`, itemsCreated }
   }
   if (agentVerdict === 'bug') {
+    // Trust the agent if its reason names a concrete, observable bug class.
+    const r = (agentReason ?? '').toLowerCase()
+    const concrete = [
+      'negative', 'duplicate', 'alert', 'dialog', '5xx', '500',
+      'crash', 'race', 'xss', 'free100', '$0', 'zero', 'inject',
+      'reflect', 'idempot', 'javascript:',
+    ]
+    if (concrete.some((k) => r.includes(k))) {
+      return { verdict: 'bug', detail: `agent: ${(agentReason ?? '').slice(0, 100)}`, itemsCreated }
+    }
     return { verdict: 'tolerable', detail: 'agent claimed bug, no signal confirmed', itemsCreated }
   }
   if (itemsCreated === 1) {
@@ -403,8 +444,8 @@ async function evaluateVerdict(
 
 // ---------- Single-intent runner (recursive — handles its own spawned children) ----------
 
-const MAX_TOTAL_FORKS = 22
-const MAX_SPAWN_DEPTH = 3 // depth 0 = top-level intent; chain can recurse 0 → 1 → 2 → 3
+const MAX_TOTAL_FORKS = 48
+const MAX_SPAWN_DEPTH = 5 // depth 0 = top-level intent; chain can recurse up to 5 levels
 
 async function runSingleFork(opts: {
   runId: string
@@ -486,7 +527,8 @@ async function runSingleFork(opts: {
         fp,
         agentResult.stats,
         serverUrl,
-        agentResult.agentVerdict
+        agentResult.agentVerdict,
+        agentResult.agentReason
       )
       verdict = finalEval.verdict
       detail = finalEval.detail
@@ -627,7 +669,13 @@ async function runForkPoint(opts: {
   if (useLLM) {
     try {
       const buf = await warmPage.screenshot({ type: 'jpeg', quality: 60 })
-      const dom = await warmPage.content().catch(() => '')
+      const dom = await warmPage
+        .evaluate(() => {
+          const clone = document.documentElement.cloneNode(true) as HTMLElement
+          clone.querySelectorAll('[data-demo-hint], .demo-hint, style, script, link, noscript').forEach((n) => n.remove())
+          return '<!doctype html>' + clone.outerHTML
+        })
+        .catch(() => '')
       intents = await generateIntents({
         pageUrl: warmPage.url(),
         domSnippet: dom,

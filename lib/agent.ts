@@ -134,7 +134,10 @@ Action types:
                 URL tampering, refresh) without one mutating state for another
               • You've discovered a NEW input or option mid-loop that wasn't
                 visible at the fork point
-            Sub-forks themselves can spawn further (up to 3 levels deep).
+            Sub-forks themselves can spawn further (up to 5 levels deep).
+            Prefer spawning aggressively when the page has multiple distinct
+            attack surfaces or parallel follow-ups — branching wider beats
+            going deeper on one thread.
   done    — stop and return your verdict ('bug' | 'passed' | 'tolerable')
 
 Selectors must be valid CSS. When uncertain about a selector, prefer ids

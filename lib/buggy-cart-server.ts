@@ -250,6 +250,14 @@ const SHELL_HEAD = (title: string) => `<!doctype html>
   .alert.error { background: var(--danger-soft); border-color: rgba(205, 61, 100, 0.2); color: var(--danger); }
   .alert.info { background: #e6f3ff; border-color: rgba(5, 112, 222, 0.2); color: #0570de; }
 
+  /* DEMO HINT — visible bug-finder cheatsheet for the deliberately-buggy demo */
+  .demo-hint { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 6px; font-size: 13px; margin: 0 0 18px; border: 1px dashed rgba(202, 138, 4, 0.45); background: #fffbeb; color: #854d0e; line-height: 1.55; }
+  .demo-hint strong { color: #713f12; font-weight: 600; }
+  .demo-hint code { background: rgba(202, 138, 4, 0.12); padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 12px; color: #713f12; }
+  .demo-hint ul { margin: 4px 0 0; padding-left: 18px; }
+  .demo-hint li { margin: 2px 0; }
+  .demo-hint .demo-ic { font-size: 16px; line-height: 1; flex-shrink: 0; padding-top: 1px; }
+
   /* PLAN COMPARISON (billing) */
   .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
   .plan { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 18px; cursor: pointer; transition: border-color 0.12s ease, box-shadow 0.12s ease; position: relative; }
@@ -424,12 +432,26 @@ const topbar = (crumbs: string, actions = '') => `
   </div>
 </header>`
 
+const demoHint = (items: string[]) => `
+<div class="demo-hint" data-demo-hint>
+  <span class="demo-ic">🐛</span>
+  <div>
+    <strong>Helix is a deliberately-buggy QA target.</strong> Things to try on this page:
+    <ul>${items.map((i) => `<li>${i}</li>`).join('')}</ul>
+  </div>
+</div>`
+
 const dashboardPage = (issueCount: number, profileName: string) => SHELL_HEAD('Dashboard') + `
 <div class="app">
   ${sidebar('dashboard', issueCount)}
   <main>
     ${topbar('<strong>Dashboard</strong>', '<a class="btn primary" href="/issues/new"><span class="ic">' + ICONS.plus + '</span> New issue</a>')}
     <div class="page">
+      ${demoHint([
+        'Go to <a href="/issues/new"><code>/issues/new</code></a> and submit with an empty title (server crashes), or paste <code>&lt;img src=x onerror=alert(1)&gt;</code> as the title and then visit <a href="/issues">/issues</a> (stored XSS).',
+        'Go to <a href="/billing"><code>/billing</code></a>: try seats <code>-5</code>, coupon <code>FREE100</code>, or leave email blank.',
+        'Tamper the URL: <a href="/billing/success?name=%3Cimg+src%3Dx+onerror%3Dalert(1)%3E"><code>/billing/success?name=&lt;img src=x onerror=alert(1)&gt;</code></a> — reflected XSS.',
+      ])}
       <div class="page-head">
         <div>
           <div class="eyebrow">Overview</div>
@@ -651,6 +673,11 @@ const issuesNewPage = (issueCount: number) => SHELL_HEAD('New issue') + `
       '<a href="/">Dashboard</a><span class="sep">/</span><a href="/issues">Issues</a><span class="sep">/</span><strong>New</strong>'
     )}
     <div class="page" style="max-width: 760px">
+      ${demoHint([
+        'Click <strong>Create issue</strong> with the title field empty → server returns HTTP 500.',
+        'Set title to <code>&lt;img src=x onerror=alert(1)&gt;</code>, create, then visit <a href="/issues">/issues</a> → JS dialog fires (stored XSS).',
+        'Click <strong>Create issue</strong> twice in quick succession → duplicate issues land on /issues (no idempotency).',
+      ])}
       <div class="page-head">
         <div>
           <h1 class="title">New issue</h1>
@@ -726,6 +753,13 @@ const billingPage = (issueCount: number) => SHELL_HEAD('Billing') + `
   <main>
     ${topbar('<a href="/">Dashboard</a><span class="sep">/</span><strong>Billing</strong>')}
     <div class="page" style="max-width: 820px">
+      ${demoHint([
+        'Set <strong>Seats</strong> to <code>-5</code> and pay → total goes negative; order accepted.',
+        'Apply coupon <code>FREE100</code> → 100% off; total drops to $0 (no max-discount cap).',
+        'Leave <strong>Email</strong> blank and pay → server returns HTTP 500.',
+        'Click <strong>Pay</strong> twice in quick succession → duplicate orders.',
+        'After paying, edit the URL to <code>/billing/success?name=&lt;img src=x onerror=alert(1)&gt;</code> → reflected XSS.',
+      ])}
       <div class="page-head">
         <div>
           <div class="eyebrow">Upgrade</div>
@@ -891,6 +925,11 @@ const billingSuccessPage = (orderId: string, name: string, issueCount: number) =
   ${sidebar('billing', issueCount)}
   <main>
     ${topbar('<a href="/">Dashboard</a><span class="sep">/</span><a href="/billing">Billing</a><span class="sep">/</span><strong>Confirmed</strong>')}
+    <div style="max-width: 820px; margin: 24px auto 0; padding: 0 24px">
+      ${demoHint([
+        'Edit the URL: replace <code>?name=...</code> with <code>?name=&lt;img src=x onerror=alert(1)&gt;</code> → JS dialog fires (reflected XSS).',
+      ])}
+    </div>
     <div class="success-card">
       <div class="check">${ICONS.check}</div>
       <h1>Payment successful</h1>
@@ -918,6 +957,10 @@ const settingsPage = (issueCount: number, profileName: string, avatarUrl: string
   <main>
     ${topbar('<a href="/">Dashboard</a><span class="sep">/</span><strong>Profile</strong>')}
     <div class="page" style="max-width: 820px">
+      ${demoHint([
+        'Set <strong>Display name</strong> to <code>&lt;img src=x onerror=alert(1)&gt;</code>, save, then visit the <a href="/">Dashboard</a> → JS dialog fires (the dashboard reflects the profile name via innerHTML).',
+        'Paste <code>javascript:alert(1)</code> into <strong>Avatar URL</strong> and save → an unfiltered <code>javascript:</code> scheme is stored on your profile.',
+      ])}
       <div class="page-head">
         <div>
           <h1 class="title">Profile</h1>
