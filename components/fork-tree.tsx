@@ -405,6 +405,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
             <span>Agent log</span>
             <span>{data.thoughts.length} step{data.thoughts.length === 1 ? '' : 's'}</span>
           </div>
+          <div style={{ maxHeight: 180, overflowY: 'auto', paddingRight: 2 }}>
           {data.thoughts.map((t, i) => {
             const verbColor =
               t.type === 'click' ? '#7aa7ff'
@@ -470,6 +471,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
               </div>
             )
           })}
+          </div>
         </div>
       )}
       {data.verdict === 'bug' && data.bugKind && (() => {
@@ -584,7 +586,7 @@ function TreeInner({
 
   const { nodes, edges } = useMemo(() => {
     const SLOT_W = 480 // horizontal slot per leaf node (incl. gap)
-    const LEVEL_Y = 640 // vertical gap between depth levels
+    const LEVEL_Y = 760 // vertical gap between depth levels (with capped agent log)
     const ROOT_HALF = 130 // root visual half-width
     const FORK_HALF = 170 // fork visual half-width (node is 340 wide)
     const TRUNK_COLOR = '#a78bfa'
