@@ -45,3 +45,25 @@ export type RunEvent =
       bugDetail?: string
     }
   | { type: 'run_complete'; runId: string; bugsFound: number; totalForks: number; at: number }
+  // ---- Patcher (human-triggered, fires only when user clicks "Fix this" on a bug fork) ----
+  | { type: 'patcher.started'; runId: string; forkId: string; sandboxId?: string; at: number }
+  | { type: 'patcher.agent_message'; runId: string; forkId: string; message: string; at: number }
+  | {
+      type: 'patcher.diff_ready'
+      runId: string
+      forkId: string
+      /** Short markdown summary of the diff (file count + key changes), not the diff itself. */
+      diffSummary: string
+      filesChanged: number
+      at: number
+    }
+  | {
+      type: 'patcher.pr_opened'
+      runId: string
+      forkId: string
+      prUrl: string
+      prNumber: number
+      branchName: string
+      at: number
+    }
+  | { type: 'patcher.failed'; runId: string; forkId: string; reason: string; at: number }
