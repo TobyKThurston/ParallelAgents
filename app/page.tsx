@@ -6,12 +6,17 @@ import { useCallback, useEffect, useState } from 'react'
 export default function Home() {
   const router = useRouter()
   const [starting, setStarting] = useState(false)
+  const [targetUrl, setTargetUrl] = useState('')
 
   const startRun = useCallback(async () => {
     if (starting) return
     setStarting(true)
     try {
-      const res = await fetch('/api/runs', { method: 'POST' })
+      const res = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetUrl: targetUrl.trim() || undefined }),
+      })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const { runId } = (await res.json()) as { runId: string }
       router.push(`/runs/${runId}`)
@@ -19,7 +24,7 @@ export default function Home() {
       setStarting(false)
       alert(`failed to start run: ${e}`)
     }
-  }, [router, starting])
+  }, [router, starting, targetUrl])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -70,21 +75,42 @@ export default function Home() {
 
         <p className="tagline">snapshot · fork · diff</p>
 
-        <div className="cta-row">
-          <button className="begin-btn" onClick={startRun} disabled={starting}>
-            {starting ? (
-              <>
-                <span className="spinner" /> spawning…
-              </>
-            ) : (
-              <>
-                Start <span className="arrow">→</span>
-              </>
-            )}
-          </button>
-          <span className="kbd-hint">
-            <kbd>↵</kbd>
-          </span>
+        <div className="cta-row" style={{ flexDirection: 'column', gap: 12, alignItems: 'stretch' }}>
+          <input
+            type="text"
+            value={targetUrl}
+            onChange={(e) => setTargetUrl(e.target.value)}
+            placeholder="target URL (leave blank for built-in buggy SaaS)"
+            spellCheck={false}
+            autoComplete="off"
+            style={{
+              width: '100%',
+              padding: '0.7rem 0.9rem',
+              background: '#141415',
+              border: '1px solid #2f333b',
+              borderRadius: '0.5rem',
+              color: '#eaeaea',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 13,
+              outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button className="begin-btn" onClick={startRun} disabled={starting}>
+              {starting ? (
+                <>
+                  <span className="spinner" /> spawning…
+                </>
+              ) : (
+                <>
+                  Start <span className="arrow">→</span>
+                </>
+              )}
+            </button>
+            <span className="kbd-hint">
+              <kbd>↵</kbd>
+            </span>
+          </div>
         </div>
       </main>
 

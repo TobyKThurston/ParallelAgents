@@ -26,6 +26,17 @@ export function hasApiKey(): boolean {
   return !!process.env.OPENAI_API_KEY
 }
 
+export type BugKind =
+  | 'xss'
+  | 'server-error'
+  | 'validation-bypass'
+  | 'broken-ui-state'
+  | 'duplicate-state'
+  | 'auth-bypass'
+  | 'data-leak'
+  | 'crash'
+  | 'other'
+
 export type AgentAction =
   | { type: 'click'; selector: string; reason: string }
   | { type: 'fill'; selector: string; value: string; reason: string }
@@ -40,6 +51,8 @@ export type AgentAction =
       type: 'done'
       verdict: 'bug' | 'passed' | 'tolerable'
       reason: string
+      bug_kind?: BugKind
+      evidence?: string
     }
 
 const ACTION_TOOL = {
@@ -78,6 +91,27 @@ const ACTION_TOOL = {
           enum: ['bug', 'passed', 'tolerable'],
           description:
             'For done: your overall judgement of whether the intent revealed a bug.',
+        },
+        bug_kind: {
+          type: 'string',
+          enum: [
+            'xss',
+            'server-error',
+            'validation-bypass',
+            'broken-ui-state',
+            'duplicate-state',
+            'auth-bypass',
+            'data-leak',
+            'crash',
+            'other',
+          ],
+          description:
+            'For done with verdict=bug: the bug category. xss=script payload executed; server-error=5xx; validation-bypass=server accepted invalid input; broken-ui-state=NaN/Infinity/$undefined/negative totals/mangled layout; duplicate-state=race produced two records; auth-bypass=accessed something you should not have; data-leak=sensitive info exposed; crash=page or JS errored.',
+        },
+        evidence: {
+          type: 'string',
+          description:
+            'For done with verdict=bug: a brief literal quote of what you observed (e.g. "total: NaN", "alert dialog: xss", "2 issues created"). One sentence, factual.',
         },
         intents: {
           type: 'array',
@@ -169,7 +203,18 @@ state-mutating paths — just stay single-track and return done.
 
 Return done as soon as you have learned enough to judge — usually within 3-5
 actions. Always include a one-sentence \`reason\` so a human watching your
-swarm can follow your thinking.`
+swarm can follow your thinking.
+
+When you return done with verdict='bug', you MUST also set:
+  bug_kind  — pick the closest category from the enum
+  evidence  — a one-sentence literal description of what you observed
+              (e.g. "displayed total: NaN", "alert dialog fired with text 'xss'",
+               "2 issues created from 1 submit")
+
+If verdict is 'passed' or 'tolerable', omit bug_kind and evidence.
+
+Be conservative: only claim bug if you saw something a maintainer would clearly
+call broken. If unsure, prefer 'tolerable'.`
 
 function compactDom(html: string, max = 4000): string {
   // Strip script/style bodies and collapse whitespace; keep tag attributes.

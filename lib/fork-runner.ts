@@ -28,6 +28,7 @@ import {
   pickNextAction,
   generateIntents,
   type AgentAction,
+  type BugKind,
   type GeneratedIntent,
 } from './agent'
 
@@ -159,7 +160,7 @@ async function injectBanner(page: Page, text: string, color: string) {
         if (existing) existing.remove()
         const b = document.createElement('div')
         b.id = '__fork_banner'
-        b.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:99999;padding:0.5rem 0.8rem;background:${color};color:#fff;font-weight:700;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.5);letter-spacing:0.02em;font-family:system-ui;font-size:12px`
+        b.style.cssText = `position:fixed;top:0;left:0;right:0;z-index:99999;padding:0.5rem 0.8rem;background:${color};color:#fff;font-weight:700;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.5);letter-spacing:0.02em;font-family:system-ui;font-size:12px;pointer-events:none`
         b.textContent = text
         document.body.appendChild(b)
       },
@@ -213,6 +214,8 @@ async function runAgentLoop(opts: {
 }): Promise<{
   agentVerdict?: 'bug' | 'passed' | 'tolerable'
   agentReason?: string
+  agentBugKind?: BugKind
+  agentEvidence?: string
   steps: number
   stats: { dialogsSeen: number; httpErrors: number }
   error?: string
@@ -223,6 +226,8 @@ async function runAgentLoop(opts: {
   const history: AgentAction[] = []
   let agentVerdict: 'bug' | 'passed' | 'tolerable' | undefined
   let agentReason: string | undefined
+  let agentBugKind: BugKind | undefined
+  let agentEvidence: string | undefined
   let step = 0
 
   for (step = 0; step < MAX_AGENT_STEPS; step++) {
@@ -258,6 +263,8 @@ async function runAgentLoop(opts: {
     if (action.type === 'done') {
       agentVerdict = action.verdict
       agentReason = action.reason
+      agentBugKind = action.bug_kind
+      agentEvidence = action.evidence
       break
     }
 
@@ -323,6 +330,8 @@ async function runAgentLoop(opts: {
   return {
     agentVerdict,
     agentReason,
+    agentBugKind,
+    agentEvidence,
     steps: step + (agentVerdict ? 1 : 0),
     stats,
   }
@@ -333,13 +342,23 @@ async function evaluateVerdict(
   fp: ForkPoint,
   stats: { dialogsSeen: number; httpErrors: number },
   serverUrl: string,
-  agentVerdict?: 'bug' | 'passed' | 'tolerable'
-): Promise<{ verdict: 'passed' | 'bug' | 'tolerable'; detail: string; itemsCreated: number }> {
+  agentVerdict?: 'bug' | 'passed' | 'tolerable',
+  agentBugKind?: BugKind,
+  agentEvidence?: string
+): Promise<{
+  verdict: 'passed' | 'bug' | 'tolerable'
+  detail: string
+  itemsCreated: number
+  bugKind?: BugKind
+  bugEvidence?: string
+}> {
   // Strong signals first.
   if (stats.dialogsSeen > 0) {
     return {
       verdict: 'bug',
       detail: `XSS dialog fired (${stats.dialogsSeen})`,
+      bugKind: 'xss',
+      bugEvidence: `${stats.dialogsSeen} JS dialog(s) fired during fork`,
       itemsCreated: 0,
     }
   }
@@ -347,6 +366,8 @@ async function evaluateVerdict(
     return {
       verdict: 'bug',
       detail: `server 5xx fired (${stats.httpErrors}× — missing validation)`,
+      bugKind: 'server-error',
+      bugEvidence: `${stats.httpErrors} HTTP 5xx response(s) observed`,
       itemsCreated: 0,
     }
   }
@@ -369,6 +390,8 @@ async function evaluateVerdict(
     return {
       verdict: 'bug',
       detail: `${itemsCreated} ${fp.countStateKey} created (expected 1) — race`,
+      bugKind: 'duplicate-state',
+      bugEvidence: `${itemsCreated} ${fp.countStateKey} created from a single fork (expected 1)`,
       itemsCreated,
     }
   }
@@ -380,10 +403,22 @@ async function evaluateVerdict(
       const orders = (r as any).orders ?? []
       const last = orders[orders.length - 1]
       if (last && typeof last.total === 'number' && last.total < 0) {
-        return { verdict: 'bug', detail: `negative total: $${last.total}`, itemsCreated }
+        return {
+          verdict: 'bug',
+          detail: `negative total: $${last.total}`,
+          bugKind: 'broken-ui-state',
+          bugEvidence: `last order total: $${last.total} (negative)`,
+          itemsCreated,
+        }
       }
       if (last && typeof last.total === 'number' && last.total === 0) {
-        return { verdict: 'bug', detail: `coupon abuse: $0 total`, itemsCreated }
+        return {
+          verdict: 'bug',
+          detail: `coupon abuse: $0 total`,
+          bugKind: 'validation-bypass',
+          bugEvidence: `last order total: $0 (coupon accepted without floor)`,
+          itemsCreated,
+        }
       }
     } catch {}
   }
@@ -392,6 +427,16 @@ async function evaluateVerdict(
     return { verdict: 'passed', detail: `created 1 ${fp.countStateKey ?? 'item'}`, itemsCreated }
   }
   if (agentVerdict === 'bug') {
+    // Trust the agent's bug claim if it provided a kind + evidence — otherwise downgrade.
+    if (agentBugKind && agentEvidence) {
+      return {
+        verdict: 'bug',
+        detail: agentEvidence,
+        bugKind: agentBugKind,
+        bugEvidence: agentEvidence,
+        itemsCreated,
+      }
+    }
     return { verdict: 'tolerable', detail: 'agent claimed bug, no signal confirmed', itemsCreated }
   }
   if (itemsCreated === 1) {
@@ -442,6 +487,8 @@ async function runSingleFork(opts: {
   let verdict: 'passed' | 'bug' | 'tolerable' | 'error' = 'tolerable'
   let detail = ''
   let itemsCreated = 0
+  let bugKind: BugKind | undefined
+  let bugEvidence: string | undefined
   let spawnRequest: SpawnRequest | undefined
   let bugsHere = 0
 
@@ -485,14 +532,20 @@ async function runSingleFork(opts: {
         fp,
         agentResult.stats,
         serverUrl,
-        agentResult.agentVerdict
+        agentResult.agentVerdict,
+        agentResult.agentBugKind,
+        agentResult.agentEvidence
       )
       verdict = finalEval.verdict
       detail = finalEval.detail
       itemsCreated = finalEval.itemsCreated
+      bugKind = finalEval.bugKind
+      bugEvidence = finalEval.bugEvidence
       if (agentResult.error) {
         verdict = 'error'
         detail = agentResult.error
+        bugKind = undefined
+        bugEvidence = undefined
       }
 
       if (verdict === 'bug') bugsHere = 1
@@ -524,6 +577,8 @@ async function runSingleFork(opts: {
       ordersCreated: itemsCreated,
       durMs: Date.now() - t0,
       verdict,
+      bugKind,
+      bugEvidence,
       excess: itemsCreated > 1 ? itemsCreated - 1 : undefined,
       bugDetail: detail,
     })
@@ -711,9 +766,19 @@ async function runForkPoint(opts: {
 
 // ---------- Top-level run ----------
 
-export async function runForkExperiment(runId: string): Promise<void> {
-  const server = await startBuggyServer(0)
-  emit(runId, { type: 'run_started', runId, targetUrl: server.url, at: Date.now() })
+export async function runForkExperiment(
+  runId: string,
+  targetUrl?: string
+): Promise<void> {
+  // Bring up the buggy demo server only if no external target was given.
+  let serverUrl = targetUrl
+  let serverStop: (() => Promise<void>) | undefined
+  if (!serverUrl) {
+    const server = await startBuggyServer(0)
+    serverUrl = server.url
+    serverStop = server.stop
+  }
+  emit(runId, { type: 'run_started', runId, targetUrl: serverUrl, at: Date.now() })
   emit(runId, { type: 'initial_state_reached', cartSize: 0, at: Date.now() })
 
   const useLLM = hasApiKey()
@@ -723,9 +788,24 @@ export async function runForkExperiment(runId: string): Promise<void> {
 
   const browser = await chromium.launch({
     headless: true,
-    channel: 'chromium',
     slowMo: SLOW_MO_MS,
   })
+
+  // When the user supplied an external URL, we don't know its bug surface — run
+  // a single generic fork point against the root path and let the planner
+  // decide the attack vector from the page itself.
+  const pointsToRun: ForkPoint[] = targetUrl
+    ? [
+        {
+          id: 'fp-target',
+          index: 0,
+          title: `Target · ${new URL(targetUrl).pathname || '/'}`,
+          initialUrl: '/',
+          context:
+            'An arbitrary web page supplied by the user. The planner must inspect the screenshot+DOM and propose intents that match what is actually on the page (forms, links, inputs). Do not assume specific endpoints, fields, or routes — observe and adapt.',
+        },
+      ]
+    : forkPoints
 
   // Fresh per-run map of "which fork was the control at each fork point"
   const controlByPoint = new Map<string, string>()
@@ -733,13 +813,13 @@ export async function runForkExperiment(runId: string): Promise<void> {
 
   try {
     let totalBugs = 0
-    for (const fp of forkPoints) {
+    for (const fp of pointsToRun) {
       const parentForkId = fp.chainsFrom ? controlByPoint.get(fp.chainsFrom) : undefined
       const result = await runForkPoint({
         runId,
         fp,
         browser,
-        serverUrl: server.url,
+        serverUrl,
         parentForkId,
         useLLM,
         totalForksRef,
@@ -758,6 +838,6 @@ export async function runForkExperiment(runId: string): Promise<void> {
     })
   } finally {
     await browser.close().catch(() => {})
-    await server.stop()
+    if (serverStop) await serverStop()
   }
 }
