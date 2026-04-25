@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "helix": "tsx scripts/helix.ts",
     "m1:smoke": "tsx scripts/m1-smoke.ts",
     "fork-proof": "tsx scripts/fork-proof/run.ts",
     "verify-ui": "tsx scripts/verify-ui.ts"

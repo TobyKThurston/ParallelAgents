@@ -71,7 +71,8 @@ const forkPoints: ForkPoint[] = [
 
 // ---------- Browser config ----------
 
-const VIEWPORT = { width: 720, height: 460 }
+// Real desktop viewport — pages render like a normal full-screen webpage.
+const VIEWPORT = { width: 1280, height: 800 }
 const SLOW_MO_MS = 150
 const MAX_AGENT_STEPS = 5
 
