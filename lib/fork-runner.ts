@@ -20,7 +20,8 @@
  * Frames stream into the tree UI via CDP captureScreenshot polling.
  */
 
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
+import type { Browser, BrowserContext, Page } from 'playwright'
+import { launchChromium } from './chromium-launcher'
 import { startBuggyServer } from './buggy-cart-server'
 import { emit } from './runs'
 import {
@@ -721,11 +722,7 @@ export async function runForkExperiment(runId: string): Promise<void> {
     console.log('[runner] OPENAI_API_KEY not set — falling back to hardcoded intents')
   }
 
-  const browser = await chromium.launch({
-    headless: true,
-    channel: 'chromium',
-    slowMo: SLOW_MO_MS,
-  })
+  const browser = await launchChromium({ slowMo: SLOW_MO_MS })
 
   // Fresh per-run map of "which fork was the control at each fork point"
   const controlByPoint = new Map<string, string>()
