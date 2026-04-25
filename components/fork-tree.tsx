@@ -1340,6 +1340,7 @@ function ExpandedFork({
             >
               close · esc
             </button>
+            <span style={{ position: 'absolute', top: 4, right: 4, fontSize: 9, color: '#a78bfa', fontFamily: 'var(--font-mono), monospace', opacity: 0.7 }}>build-v4</span>
           </div>
           <div
             style={{
