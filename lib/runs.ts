@@ -6,12 +6,17 @@
 
 import { EventEmitter } from 'node:events'
 import type { RunEvent } from './events'
+import type { RepoConfig, PatchAttempt } from './patcher/types'
 
-type Run = {
+export type Run = {
   id: string
   events: RunEvent[]
   emitter: EventEmitter
   complete: boolean
+  /** Optional target repo for the patcher. When unset, the "Fix this" UI is hidden. */
+  targetRepo?: RepoConfig
+  /** One attempt record per fork the user has clicked Fix on. */
+  patchAttempts: Record<string, PatchAttempt>
 }
 
 type RunStore = Map<string, Run>
@@ -24,11 +29,24 @@ declare global {
 const store: RunStore = globalThis.__runStore ?? new Map<string, Run>()
 if (!globalThis.__runStore) globalThis.__runStore = store
 
-export function createRun(id: string): Run {
-  const run: Run = { id, events: [], emitter: new EventEmitter(), complete: false }
+export function createRun(id: string, opts?: { targetRepo?: RepoConfig }): Run {
+  const run: Run = {
+    id,
+    events: [],
+    emitter: new EventEmitter(),
+    complete: false,
+    targetRepo: opts?.targetRepo,
+    patchAttempts: {},
+  }
   run.emitter.setMaxListeners(50)
   store.set(id, run)
   return run
+}
+
+export function setPatchAttempt(runId: string, forkId: string, attempt: PatchAttempt): void {
+  const run = store.get(runId)
+  if (!run) return
+  run.patchAttempts[forkId] = attempt
 }
 
 export function getRun(id: string): Run | undefined {
