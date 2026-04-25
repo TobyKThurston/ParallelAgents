@@ -122,22 +122,50 @@ Action types:
   fill    — type a value into an input matching the selector
   press   — press a keyboard key after the selector is focused (e.g. "Enter")
   eval    — execute a JavaScript expression in the page (e.g. for state inspection,
-            adversarial DOM manipulation, or triggering 2 concurrent fetches with
-            Promise.all to test idempotency)
-  spawn   — fork into 2-3 NEW sub-agents (use sparingly). Pick this when you've
-            navigated to a state where multiple INDEPENDENT attack paths open up
-            and pursuing them serially would mutate state. Each sub-intent should
-            be a meaningfully different angle. The current state is snapshotted
-            and each sub-fork starts from there. Use this when you DISCOVER
-            multiple options mid-loop — don't pre-plan it.
+            adversarial DOM manipulation, or triggering Promise.all with two
+            concurrent fetches to test idempotency)
+  spawn   — fork into 2-3 NEW sub-agents that branch off from this exact state.
+            STRONG signals that you should spawn:
+              • Your intent involves a RACE / CONCURRENCY (Playwright clicks
+                serialize — you literally cannot create true concurrency from a
+                single agent without spawn or eval-with-Promise.all)
+              • You've reached a multi-step flow (e.g., a success page) and
+                want to test multiple independent follow-ups (back button,
+                URL tampering, refresh) without one mutating state for another
+              • You've discovered a NEW input or option mid-loop that wasn't
+                visible at the fork point
+            Sub-forks themselves can spawn further (up to 3 levels deep).
   done    — stop and return your verdict ('bug' | 'passed' | 'tolerable')
 
 Selectors must be valid CSS. When uncertain about a selector, prefer ids
 (\`#id\`) and stable attributes (\`[data-foo]\`).
 
-Most forks should NOT spawn — they should pursue a single intent to completion
-and return done. Only spawn if you've discovered multiple distinct opportunities
-that didn't exist at the original fork point.
+If your intent is a race / concurrency test: prefer \`spawn\` (truly parallel) or
+\`eval\` with \`Promise.all([fetch(...), fetch(...)])\` (concurrent in the page).
+Plain double-clicking won't trigger races because Playwright serializes clicks.
+
+CONCRETE EXAMPLES of when spawning is the correct move:
+
+  Intent: "test the checkout endpoint for duplicate orders under concurrent submission"
+    step 1: fill #email / #name / #card with valid values (preparing shared state)
+    step 2: spawn with 2 sub-intents — "click the Pay button" / "click the Pay button"
+            (both sub-forks load the snapshotted state with the form filled,
+             then submit truly in parallel; the race fires)
+
+  Intent: "test for stored XSS by injecting a payload then viewing it elsewhere"
+    step 1: fill #title with <img src=x onerror=alert(1)>
+    step 2: click Create
+    step 3: spawn with 2 sub-intents — "navigate to /issues to render the list" /
+            "open the issue detail page directly"
+            (either child observes whether the alert dialog fires)
+
+  Intent: "after a successful order, test side-effects of going back / refreshing"
+    step 1-N: complete checkout normally
+    final: spawn 3 sub-intents — "press the browser back button", "reload the
+           current page", "tamper with ?order= in the URL"
+
+If the intent does NOT involve concurrency, multi-page follow-up, or independent
+state-mutating paths — just stay single-track and return done.
 
 Return done as soon as you have learned enough to judge — usually within 3-5
 actions. Always include a one-sentence \`reason\` so a human watching your
@@ -315,7 +343,7 @@ ${compactDom(opts.domSnippet)}`
 
   const resp = await c.chat.completions.create({
     model: 'gpt-4o-mini',
-    temperature: 0.5,
+    temperature: 0.7,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       {

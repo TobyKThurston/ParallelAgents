@@ -399,9 +399,10 @@ async function evaluateVerdict(
   return { verdict: 'tolerable', detail: 'no bug signal observed', itemsCreated }
 }
 
-// ---------- Single-intent runner (used by both top-level and spawned forks) ----------
+// ---------- Single-intent runner (recursive — handles its own spawned children) ----------
 
-const MAX_TOTAL_FORKS = 18
+const MAX_TOTAL_FORKS = 22
+const MAX_SPAWN_DEPTH = 3 // depth 0 = top-level intent; chain can recurse 0 → 1 → 2 → 3
 
 async function runSingleFork(opts: {
   runId: string
@@ -412,17 +413,20 @@ async function runSingleFork(opts: {
   navigateTo: string // initial path, e.g. /issues/new
   storageState: any
   fp: ForkPoint
-  canSpawn: boolean
+  depth: number
   totalForksRef: { count: number }
 }): Promise<{
   verdict: 'passed' | 'bug' | 'tolerable' | 'error'
   detail: string
   itemsCreated: number
-  spawnRequest?: SpawnRequest
+  bugsFoundIncludingDescendants: number
 }> {
-  const { runId, forkId, intent, browser, serverUrl, navigateTo, storageState, fp, canSpawn } = opts
+  const { runId, forkId, intent, browser, serverUrl, navigateTo, storageState, fp, depth, totalForksRef } = opts
   const t0 = Date.now()
   emit(runId, { type: 'fork_status', forkId, status: 'navigating' })
+
+  const canSpawn =
+    depth < MAX_SPAWN_DEPTH && totalForksRef.count < MAX_TOTAL_FORKS - 1
 
   const ctx = await browser.newContext({
     storageState,
@@ -438,6 +442,7 @@ async function runSingleFork(opts: {
   let detail = ''
   let itemsCreated = 0
   let spawnRequest: SpawnRequest | undefined
+  let bugsHere = 0
 
   try {
     await page.goto(serverUrl + navigateTo)
@@ -461,8 +466,9 @@ async function runSingleFork(opts: {
 
     if (agentResult.spawn) {
       spawnRequest = agentResult.spawn
-      verdict = 'tolerable' // a spawning fork is "trunk-tolerable" — its kids hold the verdict
-      detail = `spawned ${spawnRequest.intents.length} sub-forks · ${agentResult.agentReason ?? ''}`.slice(0, 120)
+      // A spawning fork hands the verdict to its children — itself is the trunk.
+      verdict = 'tolerable'
+      detail = `spawned ${spawnRequest.intents.length} sub-forks · ${agentResult.agentReason ?? ''}`.slice(0, 140)
     } else {
       await page.waitForTimeout(400)
       if (page.url() !== serverUrl + navigateTo) {
@@ -488,6 +494,7 @@ async function runSingleFork(opts: {
         detail = agentResult.error
       }
 
+      if (verdict === 'bug') bugsHere = 1
       if (verdict === 'bug' || verdict === 'error') {
         await injectBanner(
           page,
@@ -524,7 +531,62 @@ async function runSingleFork(opts: {
     await ctx.close().catch(() => {})
   }
 
-  return { verdict, detail, itemsCreated, spawnRequest }
+  // Recursively spawn children if requested. Children themselves can spawn,
+  // up to MAX_SPAWN_DEPTH and the global total-fork budget.
+  let bugsInDescendants = 0
+  if (spawnRequest) {
+    const remaining = Math.max(0, MAX_TOTAL_FORKS - totalForksRef.count)
+    const subIntents = spawnRequest.intents.slice(0, remaining)
+
+    for (const si of subIntents) {
+      emit(runId, {
+        type: 'fork_created',
+        forkId: `${forkId}.${si.name}`,
+        strategyName: si.name,
+        description: si.description.slice(0, 120),
+        intent: 1,
+        phaseId: fp.id,
+        phaseIndex: fp.index,
+        parentForkId: forkId,
+      })
+    }
+    await new Promise((r) => setTimeout(r, 250))
+
+    const subResults = await Promise.all(
+      subIntents.map(async (si) => {
+        totalForksRef.count++
+        return runSingleFork({
+          runId,
+          forkId: `${forkId}.${si.name}`,
+          intent: {
+            name: si.name,
+            banner: `↳ ${si.description.slice(0, 60)}`,
+            bannerColor: si.bannerColor ?? '#3b82f6',
+            description: si.description,
+          },
+          browser,
+          serverUrl,
+          navigateTo: new URL(spawnRequest!.pageUrl).pathname,
+          storageState: spawnRequest!.storageState,
+          fp,
+          depth: depth + 1,
+          totalForksRef,
+        })
+      })
+    )
+
+    bugsInDescendants = subResults.reduce(
+      (s, r) => s + r.bugsFoundIncludingDescendants,
+      0
+    )
+  }
+
+  return {
+    verdict,
+    detail,
+    itemsCreated,
+    bugsFoundIncludingDescendants: bugsHere + bugsInDescendants,
+  }
 }
 
 // ---------- Per-fork-point runner ----------
@@ -628,62 +690,11 @@ async function runForkPoint(opts: {
         navigateTo: fp.initialUrl,
         storageState: forkState,
         fp,
-        canSpawn: true, // top-level forks may spawn once
+        depth: 0,
         totalForksRef: opts.totalForksRef,
       })
 
-      if (result.verdict === 'bug') bugsFound++
-
-      // Handle a mid-loop spawn request: each sub-intent becomes a child fork
-      // descending from this fork in the tree. Sub-forks cannot spawn further.
-      if (result.spawnRequest) {
-        const spawn = result.spawnRequest
-        const allowedSpawns = Math.max(
-          0,
-          MAX_TOTAL_FORKS - opts.totalForksRef.count
-        )
-        const subIntents = spawn.intents.slice(0, allowedSpawns)
-
-        // Announce all sub-forks before running so the tree renders placeholders
-        for (const si of subIntents) {
-          emit(runId, {
-            type: 'fork_created',
-            forkId: `${forkId}.${si.name}`,
-            strategyName: si.name,
-            description: si.description.slice(0, 120),
-            intent: 1,
-            phaseId: fp.id,
-            phaseIndex: fp.index,
-            parentForkId: forkId,
-          })
-        }
-        await new Promise((r) => setTimeout(r, 250))
-
-        await Promise.all(
-          subIntents.map(async (si) => {
-            opts.totalForksRef.count++
-            const subForkId = `${forkId}.${si.name}`
-            const subResult = await runSingleFork({
-              runId,
-              forkId: subForkId,
-              intent: {
-                name: si.name,
-                banner: `↳ ${si.description.slice(0, 60)}`,
-                bannerColor: si.bannerColor ?? '#3b82f6',
-                description: si.description,
-              },
-              browser,
-              serverUrl,
-              navigateTo: new URL(spawn.pageUrl).pathname,
-              storageState: spawn.storageState,
-              fp,
-              canSpawn: false, // sub-forks can't spawn further
-              totalForksRef: opts.totalForksRef,
-            })
-            if (subResult.verdict === 'bug') bugsFound++
-          })
-        )
-      }
+      bugsFound += result.bugsFoundIncludingDescendants
     })
   )
 

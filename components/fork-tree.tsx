@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   Background,
@@ -16,6 +16,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { ForkStatus, RunEvent } from '../lib/events'
+
+const ExpandContext = createContext<((id: string) => void) | null>(null)
 
 type AgentThought = {
   step: number
@@ -130,11 +132,12 @@ function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
   )
 }
 
-function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
+function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
   const c = STATUS_COLOR[data.status]
   const isPulsing = data.status === 'navigating' || data.status === 'acting'
   const isTrunk = (data.childCount ?? 0) > 0
   const trunkAccent = '#a78bfa'
+  const onExpand = useContext(ExpandContext)
   return (
     <div
       style={{
@@ -220,8 +223,13 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
         {data.description}
       </div>
 
-      {/* Embedded live viewport — JPEG frames streamed from CDP */}
+      {/* Embedded live viewport — JPEG frames streamed from CDP. Click to expand. */}
       <div
+        onClick={(e) => {
+          e.stopPropagation()
+          onExpand?.(id)
+        }}
+        title="click to expand"
         style={{
           marginTop: 8,
           position: 'relative',
@@ -230,8 +238,29 @@ function ForkNodeView({ data, selected }: NodeProps<Node<ForkNode>>) {
           border: '1px solid #1d1f25',
           borderRadius: 6,
           overflow: 'hidden',
+          cursor: 'zoom-in',
         }}
       >
+        <div
+          style={{
+            position: 'absolute',
+            top: 6,
+            left: 6,
+            zIndex: 2,
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 9,
+            color: '#cbd0d9',
+            background: 'rgba(10,11,13,0.7)',
+            border: '1px solid #1d1f25',
+            padding: '2px 6px',
+            borderRadius: 3,
+            letterSpacing: '0.1em',
+            textTransform: 'uppercase',
+            pointerEvents: 'none',
+          }}
+        >
+          ⤢ expand
+        </div>
         {data.frameB64 ? (
           <img
             src={`data:image/jpeg;base64,${data.frameB64}`}
@@ -403,11 +432,13 @@ function TreeInner({
   forks,
   selectedId,
   onSelect,
+  onExpand,
 }: {
   root: RootNode
   forks: ForkNode[]
   selectedId: string | null
   onSelect: (id: string | null) => void
+  onExpand: (id: string) => void
 }) {
   const { fitView } = useReactFlow()
   const prevForkCount = useRef(0)
@@ -553,32 +584,34 @@ function TreeInner({
   }, [forks.length, fitView])
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={nodeTypes}
-      fitView
-      fitViewOptions={{ padding: 0.28 }}
-      proOptions={{ hideAttribution: true }}
-      nodesDraggable={false}
-      nodesConnectable={false}
-      panOnDrag
-      zoomOnScroll
-      minZoom={0.4}
-      maxZoom={1.6}
-      onNodeClick={(_, node) => {
-        if (node.id === 'root') onSelect(null)
-        else onSelect(node.id)
-      }}
-      onPaneClick={() => onSelect(null)}
-    >
-      <Background color="#1a1c21" gap={28} size={1} />
-      <Controls
-        showInteractive={false}
-        position="bottom-right"
-        style={{ background: '#111215', border: '1px solid #23262d' }}
-      />
-    </ReactFlow>
+    <ExpandContext.Provider value={onExpand}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        fitView
+        fitViewOptions={{ padding: 0.28 }}
+        proOptions={{ hideAttribution: true }}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        panOnDrag
+        zoomOnScroll
+        minZoom={0.4}
+        maxZoom={1.6}
+        onNodeClick={(_, node) => {
+          if (node.id === 'root') onSelect(null)
+          else onSelect(node.id)
+        }}
+        onPaneClick={() => onSelect(null)}
+      >
+        <Background color="#1a1c21" gap={28} size={1} />
+        <Controls
+          showInteractive={false}
+          position="bottom-right"
+          style={{ background: '#111215', border: '1px solid #23262d' }}
+        />
+      </ReactFlow>
+    </ExpandContext.Provider>
   )
 }
 
@@ -588,6 +621,20 @@ export function RunView({ runId }: { runId: string }) {
   const [complete, setComplete] = useState(false)
   const [summary, setSummary] = useState<{ bugsFound: number; totalForks: number } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const handleExpand = useCallback((id: string) => setExpandedId(id), [])
+  const closeExpanded = useCallback(() => setExpandedId(null), [])
+
+  useEffect(() => {
+    if (!expandedId) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setExpandedId(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expandedId])
+
+  const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
 
   useEffect(() => {
     const es = new EventSource(`/api/runs/${runId}/stream`)
@@ -867,9 +914,365 @@ export function RunView({ runId }: { runId: string }) {
               forks={forks}
               selectedId={selectedId}
               onSelect={setSelectedId}
+              onExpand={handleExpand}
             />
           </ReactFlowProvider>
         </section>
+      </div>
+      {expanded && <ExpandedFork fork={expanded} onClose={closeExpanded} />}
+    </div>
+  )
+}
+
+function ExpandedFork({ fork, onClose }: { fork: ForkNode; onClose: () => void }) {
+  const c = STATUS_COLOR[fork.status]
+  const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
+  const thoughts = fork.thoughts ?? []
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        background: 'rgba(6,7,9,0.82)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'grid',
+        placeItems: 'center',
+        padding: '3.5vh 3vw',
+        animation: 'fadeIn 0.15s ease-out',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#0d0e11',
+          border: '1px solid #23262d',
+          borderRadius: 12,
+          width: 'min(1280px, 96vw)',
+          maxHeight: '94vh',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) 360px',
+          overflow: 'hidden',
+          boxShadow: '0 30px 80px rgba(0,0,0,0.6)',
+          fontFamily: 'var(--font-sans), system-ui',
+          color: '#ececee',
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, background: '#06070a' }}>
+          <div
+            style={{
+              padding: '0.85rem 1rem',
+              borderBottom: '1px solid #1d1f25',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 2,
+                background: c.swatch,
+                boxShadow: isPulsing ? `0 0 8px ${c.swatch}` : 'none',
+              }}
+            />
+            <span
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                color: c.accent,
+                textTransform: 'uppercase',
+                letterSpacing: '0.14em',
+              }}
+            >
+              {c.label}
+            </span>
+            <span style={{ color: '#5a5f69' }}>·</span>
+            <strong
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 13,
+                fontWeight: 500,
+                letterSpacing: '-0.005em',
+              }}
+            >
+              {fork.strategyName}
+            </strong>
+            <span style={{ flex: 1 }} />
+            <button
+              onClick={onClose}
+              aria-label="close"
+              style={{
+                border: '1px solid #2f333b',
+                background: '#111215',
+                color: '#cbd0d9',
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                padding: '4px 10px',
+                borderRadius: 4,
+                letterSpacing: '0.1em',
+                textTransform: 'uppercase',
+              }}
+            >
+              close · esc
+            </button>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              position: 'relative',
+              background: '#000',
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            {fork.frameB64 ? (
+              <img
+                src={`data:image/jpeg;base64,${fork.frameB64}`}
+                alt={fork.strategyName}
+                draggable={false}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: '100%',
+                  objectFit: 'contain',
+                  display: 'block',
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 12,
+                  color: '#5a5f69',
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {fork.status === 'pending' ? 'queued' : 'connecting…'}
+              </div>
+            )}
+            {isPulsing && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  right: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '4px 8px',
+                  background: 'rgba(10,11,13,0.7)',
+                  border: '1px solid #1d1f25',
+                  borderRadius: 4,
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 10,
+                  color: '#ffb4b4',
+                  letterSpacing: '0.12em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: '#ff6b6b',
+                    boxShadow: '0 0 6px #ff6b6b',
+                    animation: 'pulse 1.3s ease-in-out infinite',
+                  }}
+                />
+                live
+              </div>
+            )}
+          </div>
+        </div>
+        <aside
+          style={{
+            borderLeft: '1px solid #1d1f25',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            background: '#0d0e11',
+          }}
+        >
+          <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid #1d1f25' }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 10,
+                color: '#5a5f69',
+                textTransform: 'uppercase',
+                letterSpacing: '0.14em',
+              }}
+            >
+              Strategy
+            </div>
+            <div style={{ fontSize: 13, color: '#cbd0d9', marginTop: 4, lineHeight: 1.5 }}>
+              {fork.description}
+            </div>
+            <div
+              style={{
+                marginTop: 10,
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                color: '#9ea3ad',
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: 6,
+              }}
+            >
+              <span>
+                orders:{' '}
+                <strong style={{ color: fork.verdict === 'bug' ? '#ffb4b4' : '#ececee', fontWeight: 500 }}>
+                  {fork.ordersCreated ?? '—'}
+                </strong>
+              </span>
+              {typeof fork.durMs === 'number' && (
+                <span>
+                  time: <strong style={{ color: '#ececee', fontWeight: 500 }}>{fork.durMs}ms</strong>
+                </span>
+              )}
+              {fork.excess !== undefined && (
+                <span style={{ color: '#ffb4b4', gridColumn: '1 / -1' }}>
+                  +{fork.excess} duplicate{fork.excess > 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+            {fork.bugDetail && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: '8px 10px',
+                  border: '1px solid #2a0f10',
+                  background: '#190a0b',
+                  borderRadius: 4,
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  color: '#ffb4b4',
+                  lineHeight: 1.45,
+                  wordBreak: 'break-word',
+                }}
+              >
+                {fork.bugDetail}
+              </div>
+            )}
+            {fork.error && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: '8px 10px',
+                  border: '1px solid #1a1227',
+                  background: '#120c1c',
+                  borderRadius: 4,
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  color: '#e3cffe',
+                  lineHeight: 1.45,
+                  wordBreak: 'break-word',
+                }}
+              >
+                err: {fork.error}
+              </div>
+            )}
+          </div>
+          <div
+            style={{
+              padding: '0.7rem 1rem 0.4rem',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 10,
+              color: '#5a5f69',
+              textTransform: 'uppercase',
+              letterSpacing: '0.14em',
+              display: 'flex',
+              justifyContent: 'space-between',
+            }}
+          >
+            <span>Agent log</span>
+            <span>{thoughts.length} step{thoughts.length === 1 ? '' : 's'}</span>
+          </div>
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: 'auto',
+              padding: '0 1rem 1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            {thoughts.length === 0 && (
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  color: '#5a5f69',
+                }}
+              >
+                no actions yet…
+              </div>
+            )}
+            {thoughts.map((t, i) => {
+              const verb =
+                t.type === 'click' ? `click ${t.selector ?? ''}`
+                : t.type === 'fill' ? `fill ${t.selector ?? ''} ${t.value ? `= ${JSON.stringify(t.value)}` : ''}`
+                : t.type === 'press' ? `press ${t.key ?? ''}`
+                : t.type === 'eval' ? 'eval'
+                : t.type === 'spawn' ? `spawn ×${t.spawnCount ?? '?'}`
+                : t.type === 'done' ? `done · ${t.verdict ?? ''}`
+                : t.type
+              return (
+                <div
+                  key={i}
+                  style={{
+                    padding: '6px 8px',
+                    border: '1px solid #1d1f25',
+                    borderRadius: 4,
+                    background: '#0a0b0d',
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10.5,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      color: '#5a5f69',
+                      marginBottom: 2,
+                    }}
+                  >
+                    <span>step {t.step + 1}</span>
+                    <span style={{ color: '#7aa7ff' }}>▸ {verb}</span>
+                  </div>
+                  <div style={{ color: '#cbd0d9' }}>{t.reason}</div>
+                  {t.code && (
+                    <pre
+                      style={{
+                        margin: '4px 0 0',
+                        padding: '4px 6px',
+                        background: '#06070a',
+                        border: '1px solid #1d1f25',
+                        borderRadius: 3,
+                        color: '#9ea3ad',
+                        fontSize: 10,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {t.code}
+                    </pre>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </aside>
       </div>
     </div>
   )
