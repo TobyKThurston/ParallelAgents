@@ -1464,14 +1464,16 @@ function ExpandedFork({
           {/* Replay timeline */}
           {replayFrames.length > 0 && (
             <div
+              data-debug="replay-timeline"
               style={{
                 padding: '0.65rem 1rem',
-                borderTop: '1px solid #1d1f25',
+                borderTop: '3px solid #ff00ff',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 12,
-                background: '#0b0c0f',
+                background: '#2a0a2a',
                 flexShrink: 0,
+                minHeight: 50,
               }}
             >
               <button
