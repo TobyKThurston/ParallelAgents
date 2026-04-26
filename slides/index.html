@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vibe check — slides</title>
+<style>
+  :root {
+    --bg: #0a0a0b;
+    --bg-soft: #141415;
+    --ink: #eaeaea;
+    --ink-soft: #9aa0a6;
+    --line: #2f333b;
+    --brand: #635bff;
+    --accent: #00d4ff;
+    --ok: #16a34a;
+    --warn: #ea580c;
+    --bug: #dc2626;
+    --xss: #9333ea;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .deck { position: relative; width: 100vw; height: 100vh; }
+  .slide {
+    position: absolute; inset: 0;
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    padding: 6vh 8vw;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+  .slide.active { display: flex; opacity: 1; }
+
+  h1 { font-size: clamp(2.2rem, 6vw, 5rem); line-height: 1.05; letter-spacing: -0.02em; font-weight: 700; }
+  h1 em { color: var(--accent); font-style: normal; }
+  h2 { font-size: clamp(1.6rem, 3.6vw, 2.6rem); letter-spacing: -0.01em; margin-bottom: 0.6em; font-weight: 700; }
+  h3 { font-size: 1rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.18em; margin-bottom: 0.4em; }
+  p, li { font-size: clamp(1rem, 1.6vw, 1.4rem); color: var(--ink-soft); line-height: 1.5; }
+  ul { list-style: none; }
+  ul li { padding: 0.4em 0; padding-left: 1.4em; position: relative; }
+  ul li::before { content: ""; position: absolute; left: 0; top: 0.95em; width: 0.7em; height: 1px; background: var(--brand); }
+  strong { color: var(--ink); font-weight: 600; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; background: var(--bg-soft); border: 1px solid var(--line); padding: 0.1em 0.4em; border-radius: 4px; }
+
+  .tagline { color: var(--ink-soft); margin-top: 1.2em; font-size: 1.2rem; }
+  .brand-bar { display: flex; align-items: center; gap: 0.6em; color: var(--ink-soft); font-size: 0.9rem; letter-spacing: 0.16em; text-transform: uppercase; }
+  .brand-bar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 12px var(--ok); }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4vw; align-items: start; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2vw; }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 1.4em 1.6em; background: var(--bg-soft); }
+  .card h4 { font-size: 1.1rem; margin-bottom: 0.5em; color: var(--ink); }
+  .card p { font-size: 0.95rem; }
+
+  .pill { display: inline-block; padding: 0.25em 0.7em; border-radius: 999px; border: 1px solid var(--line); font-size: 0.8rem; color: var(--ink-soft); margin-right: 0.4em; }
+  .stack { display: flex; flex-wrap: wrap; gap: 0.4em; margin-top: 0.8em; }
+
+  .stat { display: flex; flex-direction: column; gap: 0.2em; }
+  .stat .num { font-size: clamp(2rem, 5vw, 4rem); font-weight: 700; color: var(--accent); letter-spacing: -0.02em; }
+  .stat .lbl { color: var(--ink-soft); font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.12em; }
+
+  .bug-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; margin-top: 1em; }
+  .bug { border: 1px solid var(--line); border-radius: 8px; padding: 0.8em 1em; background: var(--bg-soft); }
+  .bug .kind { font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); }
+  .bug .what { color: var(--ink); font-size: 0.95rem; margin-top: 0.3em; }
+
+  .nav { position: fixed; bottom: 16px; right: 24px; display: flex; gap: 8px; align-items: center; color: var(--ink-soft); font-size: 0.85rem; font-family: ui-monospace, monospace; }
+  .nav button { background: var(--bg-soft); border: 1px solid var(--line); color: var(--ink); width: 30px; height: 30px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+  .nav button:hover { border-color: var(--brand); }
+  .nav .count { padding: 0 0.4em; }
+
+  /* Diagram */
+  .fork-svg { max-width: 70%; margin: 2em 0; display: block; }
+  .fork-svg .trunk { stroke: var(--brand); stroke-width: 2; fill: none; }
+  .fork-svg .branch { stroke: var(--ink-soft); stroke-width: 1.6; fill: none; opacity: 0.85; }
+  .fork-svg .b-bug { stroke: var(--bug); }
+  .fork-svg .b-pass { stroke: var(--ok); }
+  .fork-svg .node { fill: var(--bg-soft); stroke: var(--brand); stroke-width: 1.4; }
+  .fork-svg text { fill: var(--ink); font: 11px ui-monospace, monospace; }
+  .fork-svg .lbl { fill: var(--ink-soft); }
+
+  .ambient {
+    position: fixed; inset: 0; pointer-events: none; z-index: -1;
+    background:
+      radial-gradient(800px 400px at 80% -10%, rgba(99, 91, 255, 0.18), transparent 60%),
+      radial-gradient(600px 300px at -10% 110%, rgba(0, 212, 255, 0.12), transparent 60%);
+  }
+  .progress { position: fixed; top: 0; left: 0; height: 2px; background: var(--brand); transition: width 0.25s ease; z-index: 10; }
+
+  kbd { background: var(--bg-soft); border: 1px solid var(--line); padding: 0.1em 0.5em; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+<div class="progress" id="progress"></div>
+
+<div class="deck" id="deck">
+
+  <!-- 1. TITLE -->
+  <section class="slide">
+    <div class="brand-bar"><span class="dot"></span> vibe check</div>
+    <h1 style="margin-top: 0.5em;">One snapshot,<br/>a swarm of agents,<br/><em>every</em> bug at once.</h1>
+    <p class="tagline">snapshot · fork · diff</p>
+    <div class="stack" style="margin-top: 2em;">
+      <span class="pill">vercel sandbox</span>
+      <span class="pill">playwright</span>
+      <span class="pill">openai gpt-4o-mini</span>
+      <span class="pill">chromium</span>
+    </div>
+  </section>
+
+  <!-- 2. THE PROBLEM -->
+  <section class="slide">
+    <h3>The problem</h3>
+    <h2>Manual QA tests one path at a time.</h2>
+    <div class="grid-2" style="margin-top: 1.5em;">
+      <div>
+        <ul>
+          <li>Real users diverge — they fuzz inputs, double-click, paste payloads.</li>
+          <li>Each tester explores <strong>one</strong> branch; the rest of the tree never gets walked.</li>
+          <li>Bugs that need <strong>concurrent or adversarial</strong> behavior almost always slip past.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>What slips through</h4>
+        <p>races, XSS, validation bypass, broken UI state, server crashes, auth holes — all need someone to <em>actively try to break it</em>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. THE IDEA -->
+  <section class="slide">
+    <h3>The idea</h3>
+    <h2>Fork the browser. Run every &ldquo;what if&rdquo; in parallel.</h2>
+    <p style="margin-top: 1em; max-width: 50ch;">
+      One snapshot of the page. The model proposes 2&ndash;5 adversarial intents based on what's actually rendered. Each intent gets its own headless Chromium context, driven by a vision agent. They all run at the same time.
+    </p>
+
+    <svg class="fork-svg" viewBox="0 0 480 240">
+      <rect class="node" x="10" y="108" width="60" height="24" rx="4"/>
+      <text x="40" y="124" text-anchor="middle">snap</text>
+
+      <path class="trunk" d="M 70 120 L 180 120"/>
+      <circle class="node" cx="180" cy="120" r="5"/>
+
+      <path class="branch b-pass" d="M 180 120 C 240 120, 260 30, 340 30"/>
+      <path class="branch b-bug"  d="M 180 120 C 240 120, 260 80, 340 80"/>
+      <path class="branch"        d="M 180 120 C 240 120, 260 130, 340 130"/>
+      <path class="branch b-bug"  d="M 180 120 C 240 120, 260 180, 340 180"/>
+      <path class="branch"        d="M 180 120 C 240 120, 260 220, 340 220"/>
+
+      <circle class="node" cx="340" cy="30"  r="5"/><text class="lbl" x="354" y="34">control · passed</text>
+      <circle class="node" cx="340" cy="80"  r="5"/><text class="lbl" x="354" y="84">race · 🐛 bug</text>
+      <circle class="node" cx="340" cy="130" r="5"/><text class="lbl" x="354" y="134">validation</text>
+      <circle class="node" cx="340" cy="180" r="5"/><text class="lbl" x="354" y="184">xss · 🐛 bug</text>
+      <circle class="node" cx="340" cy="220" r="5"/><text class="lbl" x="354" y="224">fuzz</text>
+    </svg>
+  </section>
+
+  <!-- 4. HOW IT WORKS -->
+  <section class="slide">
+    <h3>How it works</h3>
+    <h2>Snapshot · Fork · Diff</h2>
+    <div class="grid-3" style="margin-top: 1.2em;">
+      <div class="card">
+        <h4>1. Snapshot</h4>
+        <p>Open the target URL once. Capture screenshot + DOM + storage state. This is the shared starting point.</p>
+      </div>
+      <div class="card">
+        <h4>2. Fork</h4>
+        <p>GPT-4o-mini reads the page and writes 2&ndash;5 adversarial intents. Each spawns its own headless browser context, resumed from the snapshot.</p>
+      </div>
+      <div class="card">
+        <h4>3. Diff</h4>
+        <p>The control fork must succeed. Any fork that triggers a dialog, a 5xx, duplicates, or the agent's own bug verdict gets flagged.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. THE AGENT LOOP -->
+  <section class="slide">
+    <h3>Inside one fork</h3>
+    <h2>Screenshot &rarr; LLM &rarr; action &rarr; repeat.</h2>
+    <div class="grid-2" style="margin-top: 1.5em;">
+      <div>
+        <ul>
+          <li>Take a JPEG of the page + a DOM snippet.</li>
+          <li>Send to GPT-4o-mini with the intent: <em>&ldquo;break the inputs&rdquo;</em>, <em>&ldquo;inject XSS&rdquo;</em>, <em>&ldquo;cause a race&rdquo;</em>.</li>
+          <li>Model returns one of: <code>click</code> · <code>fill</code> · <code>press</code> · <code>eval</code> · <code>spawn</code> · <code>done</code>.</li>
+          <li>Playwright executes. Loop, up to 5 steps.</li>
+          <li><code>spawn</code> recursively forks again — up to 3 levels deep, 22 forks per run.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Verdict signals</h4>
+        <p><strong style="color:var(--xss)">XSS</strong> — a JS dialog fired<br/>
+        <strong style="color:var(--bug)">5xx</strong> — server returned 500+<br/>
+        <strong style="color:var(--warn)">RACE</strong> — N items created when 1 was expected<br/>
+        <strong style="color:var(--ok)">PASS</strong> — control fork completed cleanly</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. DEMO TARGET -->
+  <section class="slide">
+    <h3>The target</h3>
+    <h2>&ldquo;Helix&rdquo; — a deliberately-broken Linear/Notion clone.</h2>
+    <p style="margin-top: 1em;">Built in to the runner. Nine planted bugs across issues, billing, and settings.</p>
+    <div class="bug-grid">
+      <div class="bug"><div class="kind">RACE</div><div class="what">POST /api/issues — no idempotency, dupes on double-submit</div></div>
+      <div class="bug"><div class="kind">XSS</div><div class="what">Issue list renders titles via innerHTML</div></div>
+      <div class="bug"><div class="kind">5XX</div><div class="what">Empty title crashes <code>.toUpperCase()</code></div></div>
+      <div class="bug"><div class="kind">BROKEN UI</div><div class="what">Negative seats &rarr; negative billing total</div></div>
+      <div class="bug"><div class="kind">VALIDATION</div><div class="what">Coupon FREE100 zeros out the order</div></div>
+      <div class="bug"><div class="kind">RACE</div><div class="what">POST /api/billing — duplicate orders</div></div>
+      <div class="bug"><div class="kind">5XX</div><div class="what">Missing email crashes <code>.split('@')</code></div></div>
+      <div class="bug"><div class="kind">XSS</div><div class="what">/billing/success renders ?name= via innerHTML</div></div>
+      <div class="bug"><div class="kind">XSS</div><div class="what">Settings avatar accepts <code>javascript:</code> URLs</div></div>
+    </div>
+  </section>
+
+  <!-- 7. UI / WHAT YOU SEE -->
+  <section class="slide">
+    <h3>What the operator sees</h3>
+    <h2>A live tree of every fork, streaming.</h2>
+    <ul style="margin-top: 1em;">
+      <li>Every fork is a node — screenshots stream in via Chrome DevTools Protocol, ~5 fps.</li>
+      <li>Bug forks turn red. Hover for the evidence: dialog count, 5xx count, duplicate rows.</li>
+      <li>Click into a bug node &rarr; expanded view with the agent's step-by-step thoughts and replay scrubber.</li>
+      <li>One-click <strong>&ldquo;Fix with Claude&rdquo;</strong> generates a prompt with the failing intent + bug evidence.</li>
+    </ul>
+  </section>
+
+  <!-- 8. STACK -->
+  <section class="slide">
+    <h3>Stack</h3>
+    <h2>Boring pieces, novel arrangement.</h2>
+    <div class="grid-3" style="margin-top: 1.2em;">
+      <div class="card">
+        <h4>Frontend</h4>
+        <p>Next.js 16 (App Router) · React 19 · @xyflow/react for the live tree · server-sent events for streaming frames.</p>
+      </div>
+      <div class="card">
+        <h4>Runner</h4>
+        <p>Playwright + Chromium · CDP <code>Page.captureScreenshot</code> polling · per-fork <code>BrowserContext</code> with replayed storage state.</p>
+      </div>
+      <div class="card">
+        <h4>Brain</h4>
+        <p>OpenAI GPT-4o-mini with vision · structured tool calls (<code>pick_action</code>, <code>generate_intents</code>, <code>discover_fork_points</code>).</p>
+      </div>
+    </div>
+    <div class="stack" style="margin-top: 2em;">
+      <span class="pill">deployable on vercel sandbox</span>
+      <span class="pill">@sparticuz/chromium for serverless</span>
+      <span class="pill">zod schemas</span>
+    </div>
+  </section>
+
+  <!-- 9. WHY IT WORKS -->
+  <section class="slide">
+    <h3>Why this beats one-tester-at-a-time</h3>
+    <h2>Parallel adversarial coverage in a single run.</h2>
+    <div class="grid-3" style="margin-top: 1.2em;">
+      <div class="stat"><span class="num">22</span><span class="lbl">forks per run, max</span></div>
+      <div class="stat"><span class="num">3</span><span class="lbl">recursion depth</span></div>
+      <div class="stat"><span class="num">9 / 9</span><span class="lbl">planted bugs surfaced on Helix</span></div>
+    </div>
+    <p style="margin-top: 2em; max-width: 60ch;">
+      You don't write tests. You don't write payloads. You point it at a URL and watch the tree fill in. The bugs that surface are the ones a curious human would have found — if you had a hundred curious humans.
+    </p>
+  </section>
+
+  <!-- 10. THANKS -->
+  <section class="slide">
+    <div class="brand-bar"><span class="dot"></span> vibe check</div>
+    <h1 style="margin-top: 0.5em;">Try it.</h1>
+    <p class="tagline">point it at a URL — get a tree of every way it breaks.</p>
+    <p style="margin-top: 3em; font-family: ui-monospace, monospace; color: var(--ink-soft);">
+      <kbd>&larr;</kbd> <kbd>&rarr;</kbd> to navigate &nbsp;·&nbsp; <kbd>f</kbd> for fullscreen
+    </p>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button id="prev" aria-label="previous">&larr;</button>
+  <span class="count"><span id="cur">1</span> / <span id="total">1</span></span>
+  <button id="next" aria-label="next">&rarr;</button>
+</div>
+
+<script>
+  const slides = document.querySelectorAll('.slide');
+  const total = slides.length;
+  document.getElementById('total').textContent = total;
+  let i = 0;
+  const progress = document.getElementById('progress');
+  const cur = document.getElementById('cur');
+
+  function show(n) {
+    i = Math.max(0, Math.min(total - 1, n));
+    slides.forEach((s, idx) => s.classList.toggle('active', idx === i));
+    cur.textContent = i + 1;
+    progress.style.width = ((i + 1) / total * 100) + '%';
+    history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  document.getElementById('prev').onclick = () => show(i - 1);
+  document.getElementById('next').onclick = () => show(i + 1);
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(total - 1);
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    }
+  });
+
+  const initial = parseInt(location.hash.replace('#', ''), 10);
+  show(Number.isFinite(initial) && initial > 0 ? initial - 1 : 0);
+</script>
+</body>
+</html>

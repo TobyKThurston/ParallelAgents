@@ -94,6 +94,12 @@ const STATUS_COLOR: Record<
 }
 
 function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
+  const isLoading = data.cartSize === undefined
+  const cartLabel = isLoading
+    ? 'Preparing shared state…'
+    : data.cartSize === 0
+    ? 'Starting from an empty cart'
+    : `Cart starts with ${data.cartSize} item${data.cartSize === 1 ? '' : 's'}`
   return (
     <div
       style={{
@@ -117,8 +123,32 @@ function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
       >
         Fork point · shared state
       </div>
-      <div style={{ fontSize: 15, marginTop: 6, fontWeight: 500, letterSpacing: '-0.01em' }}>
-        Cart has {data.cartSize ?? '—'} items
+      <div
+        style={{
+          fontSize: 15,
+          marginTop: 6,
+          fontWeight: 500,
+          letterSpacing: '-0.01em',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          color: isLoading ? '#9ea3ad' : '#ececee',
+        }}
+      >
+        {isLoading && (
+          <span
+            aria-hidden
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#7aa7ff',
+              animation: 'pulse 1.4s ease-in-out infinite',
+              flexShrink: 0,
+            }}
+          />
+        )}
+        {cartLabel}
       </div>
       <div
         style={{
@@ -955,7 +985,7 @@ export function RunView({ runId }: { runId: string }) {
           aria-label="back to home"
           title="back to home"
         >
-          ◆ <strong>vibe check</strong>
+          <strong>vibe check</strong>
           <span className="tag">/ run {shortId(runId)}</span>
         </Link>
 

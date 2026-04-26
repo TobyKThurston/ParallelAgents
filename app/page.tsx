@@ -46,17 +46,6 @@ export default function Home() {
 
       <nav className="top-nav">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 16 16" width="14" height="14">
-              <path
-                d="M2 8 L7 8 M7 8 L13 3 M7 8 L13 8 M7 8 L13 13"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                fill="none"
-                strokeLinecap="round"
-              />
-            </svg>
-          </span>
           <strong>vibe check</strong>
         </div>
         <div className="env-chip">
