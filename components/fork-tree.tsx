@@ -773,6 +773,20 @@ export function RunView({ runId }: { runId: string }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [expandedId])
 
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/runs/${runId}/meta`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (cancelled || !j) return
+        setTargetRepoConfigured(!!j.targetRepoConfigured)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [runId])
+
   const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
   const fixFork = fixId ? forks.find((f) => f.id === fixId) ?? null : null
 
@@ -876,6 +890,64 @@ export function RunView({ runId }: { runId: string }) {
             setComplete(true)
             setSummary({ bugsFound: evt.bugsFound, totalForks: evt.totalForks })
             es.close()
+            break
+          case 'patcher.started':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'sandbox_starting' as PatchAttemptStatus,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.agent_message':
+            setPatcherViews((p) => {
+              const cur: PatcherView = p[evt.forkId] ?? { status: 'agent_running', messages: [] }
+              return {
+                ...p,
+                [evt.forkId]: {
+                  ...cur,
+                  status: cur.status === 'sandbox_starting' || cur.status === 'queued' ? 'agent_running' : cur.status,
+                  messages: [...cur.messages, evt.message].slice(-20),
+                },
+              }
+            })
+            break
+          case 'patcher.diff_ready':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'diff_ready' as PatchAttemptStatus,
+                diffSummary: evt.diffSummary,
+                filesChanged: evt.filesChanged,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.pr_opened':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'pr_opened' as PatchAttemptStatus,
+                prUrl: evt.prUrl,
+                prNumber: evt.prNumber,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
+            break
+          case 'patcher.failed':
+            setPatcherViews((p) => ({
+              ...p,
+              [evt.forkId]: {
+                ...(p[evt.forkId] ?? { messages: [] }),
+                status: 'failed' as PatchAttemptStatus,
+                failureReason: evt.reason,
+                messages: p[evt.forkId]?.messages ?? [],
+              },
+            }))
             break
         }
       } catch {}
@@ -1626,6 +1698,17 @@ function ExpandedFork({
                 }}
               >
                 {fork.bugDetail}
+              </div>
+            )}
+            {fork.verdict === 'bug' && targetRepoConfigured && (
+              <div style={{ marginTop: 10 }}>
+                <FixThisButton
+                  runId={runId}
+                  forkId={fork.id}
+                  status={patcherView?.status}
+                  prUrl={patcherView?.prUrl}
+                />
+                {patcherView && <PatcherStatus view={patcherView} />}
               </div>
             )}
             {fork.error && (
