@@ -206,13 +206,13 @@ kbd {
   fill: none;
   stroke-dasharray: 110;
   stroke-dashoffset: 110;
-  animation: fork-draw 0.55s 0.1s ease-out forwards;
+  animation: trunk-loop 5s 0.1s ease-in-out infinite;
 }
 
 .fork-split-node {
   fill: var(--ink);
   opacity: 0;
-  animation: fork-pop 0.25s 0.65s ease-out forwards;
+  animation: tip-loop 5s 0.1s ease-in-out infinite;
 }
 
 .fork-branch {
@@ -223,10 +223,10 @@ kbd {
   stroke-dashoffset: 240;
 }
 
-.fork-branch.b1 { stroke: var(--green);  animation: fork-draw 0.7s 0.8s ease-out forwards; }
-.fork-branch.b2 { stroke: var(--red);    animation: fork-draw 0.7s 0.9s ease-out forwards; }
-.fork-branch.b3 { stroke: var(--amber);  animation: fork-draw 0.7s 1.0s ease-out forwards; }
-.fork-branch.b4 { stroke: var(--purple); animation: fork-draw 0.7s 1.1s ease-out forwards; }
+.fork-branch.b1 { stroke: var(--green);  animation: branch-loop 5s 0.2s  ease-in-out infinite; }
+.fork-branch.b2 { stroke: var(--red);    animation: branch-loop 5s 0.35s ease-in-out infinite; }
+.fork-branch.b3 { stroke: var(--amber);  animation: branch-loop 5s 0.5s  ease-in-out infinite; }
+.fork-branch.b4 { stroke: var(--purple); animation: branch-loop 5s 0.65s ease-in-out infinite; }
 
 .fork-tip { opacity: 0; }
 .fork-tip text {
@@ -236,23 +236,32 @@ kbd {
   letter-spacing: 0.04em;
 }
 
-.fork-tip.t1 { animation: fork-pop 0.3s 1.45s ease-out forwards; }
-.fork-tip.t2 { animation: fork-pop 0.3s 1.55s ease-out forwards; }
-.fork-tip.t3 { animation: fork-pop 0.3s 1.65s ease-out forwards; }
-.fork-tip.t4 { animation: fork-pop 0.3s 1.75s ease-out forwards; }
+.fork-tip.t1 { animation: tip-loop 5s 0.4s  ease-in-out infinite; }
+.fork-tip.t2 { animation: tip-loop 5s 0.55s ease-in-out infinite; }
+.fork-tip.t3 { animation: tip-loop 5s 0.7s  ease-in-out infinite; }
+.fork-tip.t4 { animation: tip-loop 5s 0.85s ease-in-out infinite; }
 
 .fork-tip.t1 circle { fill: var(--green); }
 .fork-tip.t2 circle { fill: var(--red); }
 .fork-tip.t3 circle { fill: var(--amber); }
 .fork-tip.t4 circle { fill: var(--purple); }
 
-@keyframes fork-draw {
-  to { stroke-dashoffset: 0; }
+@keyframes trunk-loop {
+  0%       { stroke-dashoffset: 110; }
+  42%, 58% { stroke-dashoffset: 0; }
+  100%     { stroke-dashoffset: 110; }
 }
 
-@keyframes fork-pop {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+@keyframes branch-loop {
+  0%       { stroke-dashoffset: 240; }
+  42%, 58% { stroke-dashoffset: 0; }
+  100%     { stroke-dashoffset: 240; }
+}
+
+@keyframes tip-loop {
+  0%, 18%   { opacity: 0; }
+  42%, 58%  { opacity: 1; }
+  82%, 100% { opacity: 0; }
 }
 
 /* ---------- cta ---------- */

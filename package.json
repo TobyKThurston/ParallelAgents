@@ -1,5 +1,5 @@
 {
-  "name": "parallel-agents",
+  "name": "vibe-check",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "helix": "tsx scripts/helix.ts",
     "m1:smoke": "tsx scripts/m1-smoke.ts",
     "fork-proof": "tsx scripts/fork-proof/run.ts",
     "verify-ui": "tsx scripts/verify-ui.ts"
@@ -20,6 +21,7 @@
     "typescript": "^5.7.3"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^147.0.2",
     "@vercel/sandbox": "latest",
     "@xyflow/react": "^12.10.2",
     "dotenv": "^17.4.2",
@@ -27,6 +29,7 @@
     "next": "^16.2.4",
     "openai": "^6.34.0",
     "playwright": "^1.49.0",
+    "playwright-core": "^1.59.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "zod": "^4.3.6"

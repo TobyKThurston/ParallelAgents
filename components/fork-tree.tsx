@@ -1,6 +1,8 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   ReactFlow,
   Background,
@@ -15,12 +17,22 @@ import {
   MarkerType,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { ForkStatus, RunEvent } from '../lib/events'
-import type { PatchAttemptStatus } from '../lib/patcher/types'
-import { FixThisButton } from './fix-this-button'
-import { PatcherStatus, type PatcherView } from './patcher-status'
+import type { BugKind, ForkStatus, RunEvent } from '../lib/events'
+
+const BUG_KIND_COLOR: Record<BugKind, { bg: string; fg: string; label: string }> = {
+  'xss':                { bg: '#3b1740', fg: '#f0aaff', label: 'XSS' },
+  'server-error':       { bg: '#3a1010', fg: '#ff9090', label: '5XX' },
+  'validation-bypass':  { bg: '#3a2a08', fg: '#ffcd6d', label: 'NO VALIDATE' },
+  'broken-ui-state':    { bg: '#3a1f08', fg: '#ffb060', label: 'BROKEN UI' },
+  'duplicate-state':    { bg: '#3b0e1f', fg: '#ff8fb1', label: 'RACE' },
+  'auth-bypass':        { bg: '#1f2a3a', fg: '#7ec8ff', label: 'AUTHZ' },
+  'data-leak':          { bg: '#2a3a1f', fg: '#b9e07a', label: 'LEAK' },
+  'crash':              { bg: '#2a1740', fg: '#c9a8ff', label: 'CRASH' },
+  'other':              { bg: '#2a1010', fg: '#ff8585', label: 'BUG' },
+}
 
 const ExpandContext = createContext<((id: string) => void) | null>(null)
+const FixContext = createContext<((id: string) => void) | null>(null)
 
 type AgentThought = {
   step: number
@@ -31,7 +43,11 @@ type AgentThought = {
   key?: string
   code?: string
   verdict?: 'bug' | 'passed' | 'tolerable'
+  bugKind?: BugKind
+  evidence?: string
   spawnCount?: number
+  /** Screenshot the agent saw before this step's action — used by replay scrubber. */
+  frameB64?: string
 }
 
 type ForkNode = {
@@ -46,6 +62,8 @@ type ForkNode = {
   ordersCreated?: number
   durMs?: number
   verdict?: 'passed' | 'bug' | 'tolerable' | 'error'
+  bugKind?: BugKind
+  bugEvidence?: string
   excess?: number
   error?: string
   bugDetail?: string
@@ -57,8 +75,6 @@ type ForkNode = {
 }
 
 type RootNode = {
-  cartSize?: number
-  origins?: number
   targetUrl?: string
 }
 
@@ -100,31 +116,16 @@ function RootNodeView({ data }: NodeProps<Node<RootNode>>) {
         Fork point · shared state
       </div>
       <div style={{ fontSize: 15, marginTop: 6, fontWeight: 500, letterSpacing: '-0.01em' }}>
-        Cart has {data.cartSize ?? '—'} items
-      </div>
-      <div
-        style={{
-          fontFamily: 'var(--font-mono), monospace',
-          fontSize: 11,
-          color: '#9ea3ad',
-          marginTop: 6,
-          display: 'flex',
-          gap: 12,
-        }}
-      >
-        <span>storageState</span>
-        <span>·</span>
-        <span>
-          {data.origins ?? 0} origin{data.origins === 1 ? '' : 's'}
-        </span>
+        Target page
       </div>
       {data.targetUrl && (
         <div
           style={{
             fontFamily: 'var(--font-mono), monospace',
-            fontSize: 10,
-            color: '#5a5f69',
-            marginTop: 4,
+            fontSize: 11,
+            color: '#9ea3ad',
+            marginTop: 6,
+            wordBreak: 'break-all',
           }}
         >
           {data.targetUrl}
@@ -141,6 +142,7 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
   const isTrunk = (data.childCount ?? 0) > 0
   const trunkAccent = '#a78bfa'
   const onExpand = useContext(ExpandContext)
+  const onFix = useContext(FixContext)
   return (
     <div
       style={{
@@ -361,35 +363,132 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
           </span>
         )}
       </div>
-      {data.thoughts && data.thoughts.length > 0 && (() => {
-        const latest = data.thoughts[data.thoughts.length - 1]
-        const verb =
-          latest.type === 'click' ? `click ${latest.selector ?? ''}`
-          : latest.type === 'fill' ? `fill ${latest.selector ?? ''}`
-          : latest.type === 'press' ? `press ${latest.key ?? ''}`
-          : latest.type === 'eval' ? 'eval'
-          : latest.type === 'spawn' ? `spawn ×${latest.spawnCount ?? '?'}`
-          : latest.type === 'done' ? `done · ${latest.verdict ?? ''}`
-          : latest.type
+      {data.thoughts && data.thoughts.length > 0 && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: '8px 10px 6px',
+            border: '1px solid #1d1f25',
+            borderRadius: 5,
+            background: '#0a0b0d',
+          }}
+        >
+          <div
+            style={{
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 9,
+              color: '#5a5f69',
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              marginBottom: 6,
+              display: 'flex',
+              justifyContent: 'space-between',
+            }}
+          >
+            <span>Agent log</span>
+            <span>{data.thoughts.length} step{data.thoughts.length === 1 ? '' : 's'}</span>
+          </div>
+          <div style={{ maxHeight: 180, overflowY: 'auto', paddingRight: 2 }}>
+          {data.thoughts.map((t, i) => {
+            const verbColor =
+              t.type === 'click' ? '#7aa7ff'
+              : t.type === 'fill' ? '#fbbf24'
+              : t.type === 'press' ? '#7dd3fc'
+              : t.type === 'eval' ? '#c9a8ff'
+              : t.type === 'spawn' ? '#a78bfa'
+              : t.type === 'done' ? (t.verdict === 'bug' ? '#ff6b6b' : t.verdict === 'passed' ? '#7ddc9c' : '#9ea3ad')
+              : '#9ea3ad'
+            const target =
+              t.type === 'click' ? t.selector
+              : t.type === 'fill' ? t.selector
+              : t.type === 'press' ? `${t.selector ?? ''} ${t.key ?? ''}`.trim()
+              : ''
+            const verbLabel =
+              t.type === 'click' ? 'CLICK'
+              : t.type === 'fill' ? 'FILL'
+              : t.type === 'press' ? 'PRESS'
+              : t.type === 'eval' ? 'EVAL'
+              : t.type === 'spawn' ? `SPAWN ×${t.spawnCount ?? '?'}`
+              : t.type === 'done' ? `DONE · ${t.verdict ?? ''}`
+              : (t as any).type
+            return (
+              <div
+                key={i}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '14px auto 1fr',
+                  columnGap: 6,
+                  marginBottom: i === data.thoughts!.length - 1 ? 0 : 5,
+                  alignItems: 'baseline',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color: '#5a5f69',
+                    textAlign: 'right',
+                  }}
+                >
+                  {i + 1}.
+                </span>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color: verbColor,
+                    fontWeight: 600,
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  {verbLabel}
+                  {target && (
+                    <span style={{ color: '#9ea3ad', fontWeight: 400, marginLeft: 4 }}>
+                      {target}
+                    </span>
+                  )}
+                </span>
+                <span style={{ fontSize: 11, color: '#cbd0d9', lineHeight: 1.45 }}>
+                  {t.reason}
+                </span>
+              </div>
+            )
+          })}
+          </div>
+        </div>
+      )}
+      {data.verdict === 'bug' && data.bugKind && (() => {
+        const k = BUG_KIND_COLOR[data.bugKind]
         return (
           <div
             style={{
               marginTop: 8,
-              padding: '6px 8px',
-              border: '1px solid #1d1f25',
-              borderRadius: 4,
-              background: '#0a0b0d',
-              fontFamily: 'var(--font-mono), monospace',
-              fontSize: 10,
-              color: '#9ea3ad',
-              lineHeight: 1.45,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              flexWrap: 'wrap',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#5a5f69', marginBottom: 2 }}>
-              <span>step {latest.step + 1}</span>
-              <span style={{ color: '#7aa7ff' }}>▸ {verb}</span>
-            </div>
-            <div style={{ color: '#cbd0d9' }}>{latest.reason}</div>
+            <span
+              style={{
+                background: k.bg,
+                color: k.fg,
+                border: `1px solid ${k.fg}`,
+                borderRadius: 3,
+                padding: '1px 6px',
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: '0.06em',
+                fontFamily: 'var(--font-mono), monospace',
+              }}
+            >
+              {k.label}
+            </span>
+            {data.bugEvidence && (
+              <span style={{ color: '#ffb4b4', fontSize: 10.5, fontFamily: 'var(--font-mono), monospace' }}>
+                {data.bugEvidence}
+              </span>
+            )}
           </div>
         )
       })()}
@@ -420,6 +519,26 @@ function ForkNodeView({ id, data, selected }: NodeProps<Node<ForkNode>>) {
           err: {data.error.slice(0, 80)}
         </div>
       )}
+      {data.verdict === 'error' && onFix && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onFix(id) }}
+          style={{
+            marginTop: 8,
+            background: '#1a1227',
+            border: '1px solid #c9a8ff',
+            color: '#e3cffe',
+            borderRadius: 4,
+            padding: '4px 9px',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 10,
+            letterSpacing: '0.06em',
+            cursor: 'pointer',
+            width: '100%',
+          }}
+        >
+          ✦ fix with claude
+        </button>
+      )}
     </div>
   )
 }
@@ -436,19 +555,21 @@ function TreeInner({
   selectedId,
   onSelect,
   onExpand,
+  onFix,
 }: {
   root: RootNode
   forks: ForkNode[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onExpand: (id: string) => void
+  onFix: (id: string) => void
 }) {
   const { fitView } = useReactFlow()
   const prevForkCount = useRef(0)
 
   const { nodes, edges } = useMemo(() => {
-    const SLOT_W = 380 // horizontal slot per leaf node (incl. gap)
-    const LEVEL_Y = 560
+    const SLOT_W = 480 // horizontal slot per leaf node (incl. gap)
+    const LEVEL_Y = 760 // vertical gap between depth levels (with capped agent log)
     const ROOT_HALF = 130 // root visual half-width
     const FORK_HALF = 170 // fork visual half-width (node is 340 wide)
     const TRUNK_COLOR = '#a78bfa'
@@ -588,6 +709,7 @@ function TreeInner({
 
   return (
     <ExpandContext.Provider value={onExpand}>
+     <FixContext.Provider value={onFix}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -614,6 +736,7 @@ function TreeInner({
           style={{ background: '#111215', border: '1px solid #23262d' }}
         />
       </ReactFlow>
+     </FixContext.Provider>
     </ExpandContext.Provider>
   )
 }
@@ -625,10 +748,21 @@ export function RunView({ runId }: { runId: string }) {
   const [summary, setSummary] = useState<{ bugsFound: number; totalForks: number } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [targetRepoConfigured, setTargetRepoConfigured] = useState(false)
-  const [patcherViews, setPatcherViews] = useState<Record<string, PatcherView>>({})
+  const [fixId, setFixId] = useState<string | null>(null)
+  const seenErrorsRef = useRef<Set<string>>(new Set())
+  const dismissedAutoRef = useRef<Set<string>>(new Set())
   const handleExpand = useCallback((id: string) => setExpandedId(id), [])
-  const closeExpanded = useCallback(() => setExpandedId(null), [])
+  const closeExpanded = useCallback(() => {
+    setExpandedId((id) => {
+      if (id) dismissedAutoRef.current.add(id)
+      return null
+    })
+  }, [])
+  const openFix = useCallback((id: string) => setFixId(id), [])
+  const closeFix = useCallback(() => {
+    if (fixId) dismissedAutoRef.current.add(fixId)
+    setFixId(null)
+  }, [fixId])
 
   useEffect(() => {
     if (!expandedId) return
@@ -654,6 +788,11 @@ export function RunView({ runId }: { runId: string }) {
   }, [runId])
 
   const expanded = expandedId ? forks.find((f) => f.id === expandedId) ?? null : null
+  const fixFork = fixId ? forks.find((f) => f.id === fixId) ?? null : null
+
+  // No auto-popup. The user opens the expanded view manually by clicking a
+  // fork tile. (Earlier behaviour auto-opened on error or bug — removed
+  // because it interrupts watching the live tree.)
 
   useEffect(() => {
     const es = new EventSource(`/api/runs/${runId}/stream`)
@@ -663,12 +802,6 @@ export function RunView({ runId }: { runId: string }) {
         switch (evt.type) {
           case 'run_started':
             setRoot((r) => ({ ...r, targetUrl: evt.targetUrl }))
-            break
-          case 'initial_state_reached':
-            setRoot((r) => ({ ...r, cartSize: evt.cartSize }))
-            break
-          case 'storage_snapshotted':
-            setRoot((r) => ({ ...r, origins: evt.origins }))
             break
           case 'fork_created':
             setForks((fs) =>
@@ -717,7 +850,10 @@ export function RunView({ runId }: { runId: string }) {
                   key: 'key' in a ? a.key : undefined,
                   code: 'code' in a ? a.code : undefined,
                   verdict: 'verdict' in a ? a.verdict : undefined,
+                  bugKind: 'bug_kind' in a ? a.bug_kind : undefined,
+                  evidence: 'evidence' in a ? a.evidence : undefined,
                   spawnCount: a.type === 'spawn' ? a.intents.length : undefined,
+                  frameB64: evt.frameB64,
                 }
                 return { ...f, thoughts: [...(f.thoughts ?? []), t] }
               })
@@ -732,6 +868,8 @@ export function RunView({ runId }: { runId: string }) {
                       ordersCreated: evt.ordersCreated,
                       durMs: evt.durMs,
                       verdict: evt.verdict,
+                      bugKind: evt.bugKind,
+                      bugEvidence: evt.bugEvidence,
                       excess: evt.excess,
                       error: evt.error,
                       bugDetail: evt.bugDetail,
@@ -829,13 +967,40 @@ export function RunView({ runId }: { runId: string }) {
   const overallState: 'warming' | 'running' | 'done' =
     complete ? 'done' : totalForks === 0 ? 'warming' : 'running'
 
+  const router = useRouter()
+  const [rerunStarting, setRerunStarting] = useState(false)
+  const handleRerun = useCallback(async () => {
+    if (rerunStarting) return
+    setRerunStarting(true)
+    try {
+      const targetUrl = root.targetUrl
+      const res = await fetch('/api/runs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(targetUrl ? { targetUrl } : {}),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const { runId: nextId } = (await res.json()) as { runId: string }
+      router.push(`/runs/${nextId}`)
+    } catch (e) {
+      setRerunStarting(false)
+      alert(`failed to start rerun: ${e}`)
+    }
+  }, [rerunStarting, root.targetUrl, router])
+
   return (
     <div className="run-shell">
       <header className="run-top">
-        <div className="brand">
-          ◆ <strong>Parallel Agents</strong>
+        <Link
+          href="/"
+          className="brand"
+          style={{ cursor: 'pointer', transition: 'color 0.12s ease' }}
+          aria-label="back to home"
+          title="back to home"
+        >
+          ◆ <strong>vibe check</strong>
           <span className="tag">/ run {shortId(runId)}</span>
-        </div>
+        </Link>
 
         <div className="run-progress">
           <span className="counter">
@@ -870,7 +1035,7 @@ export function RunView({ runId }: { runId: string }) {
           </div>
         </div>
 
-        <div className="badges">
+        <div className="badges" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {overallState === 'warming' && (
             <span className="status-pill running">
               <span className="dot" /> warming
@@ -891,6 +1056,45 @@ export function RunView({ runId }: { runId: string }) {
               <span className="dot" /> bugs
             </span>
           )}
+          <button
+            onClick={handleRerun}
+            disabled={rerunStarting}
+            aria-label="rerun"
+            title={overallState === 'done' ? 'Run again' : 'Start a new run (this one keeps going)'}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid #2f333b',
+              background: rerunStarting ? '#1d1d24' : '#15151a',
+              color: rerunStarting ? '#5a5f69' : '#cbd0d9',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              cursor: rerunStarting ? 'wait' : 'pointer',
+              transition: 'background 0.12s ease, border-color 0.12s ease, color 0.12s ease',
+            }}
+            onMouseEnter={(e) => {
+              if (!rerunStarting) {
+                e.currentTarget.style.background = '#1d1d24'
+                e.currentTarget.style.borderColor = '#a78bfa'
+                e.currentTarget.style.color = '#ececee'
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!rerunStarting) {
+                e.currentTarget.style.background = '#15151a'
+                e.currentTarget.style.borderColor = '#2f333b'
+                e.currentTarget.style.color = '#cbd0d9'
+              }
+            }}
+          >
+            {rerunStarting ? '…' : '↻'} rerun
+          </button>
         </div>
       </header>
 
@@ -902,10 +1106,6 @@ export function RunView({ runId }: { runId: string }) {
           <dl className="sidebar-state">
             <dt>target</dt>
             <dd>{root.targetUrl ?? '—'}</dd>
-            <dt>cart</dt>
-            <dd>{root.cartSize !== undefined ? `${root.cartSize} items` : '—'}</dd>
-            <dt>origins</dt>
-            <dd>{root.origins ?? '—'}</dd>
           </dl>
 
           <div className="sidebar-section">
@@ -966,6 +1166,30 @@ export function RunView({ runId }: { runId: string }) {
                       </span>
                     </div>
                   )}
+                  {f.verdict === 'error' && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); openFix(f.id) }}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); openFix(f.id) } }}
+                      style={{
+                        marginTop: 6,
+                        alignSelf: 'flex-start',
+                        background: '#1a1227',
+                        border: '1px solid #c9a8ff',
+                        color: '#e3cffe',
+                        borderRadius: 4,
+                        padding: '3px 8px',
+                        fontFamily: 'var(--font-mono), monospace',
+                        fontSize: 10,
+                        letterSpacing: '0.06em',
+                        cursor: 'pointer',
+                        display: 'inline-block',
+                      }}
+                    >
+                      ✦ fix with claude
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -992,6 +1216,7 @@ export function RunView({ runId }: { runId: string }) {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onExpand={handleExpand}
+              onFix={openFix}
             />
           </ReactFlowProvider>
         </section>
@@ -999,11 +1224,13 @@ export function RunView({ runId }: { runId: string }) {
       {expanded && (
         <ExpandedFork
           fork={expanded}
+          targetUrl={root.targetUrl}
           onClose={closeExpanded}
-          runId={runId}
-          targetRepoConfigured={targetRepoConfigured}
-          patcherView={patcherViews[expanded.id]}
+          onFix={openFix}
         />
+      )}
+      {fixFork && (
+        <ClaudeFixModal fork={fixFork} targetUrl={root.targetUrl} onClose={closeFix} />
       )}
     </div>
   )
@@ -1011,20 +1238,87 @@ export function RunView({ runId }: { runId: string }) {
 
 function ExpandedFork({
   fork,
+  targetUrl,
   onClose,
-  runId,
-  targetRepoConfigured,
-  patcherView,
+  onFix,
 }: {
   fork: ForkNode
+  targetUrl?: string
   onClose: () => void
-  runId: string
-  targetRepoConfigured: boolean
-  patcherView?: PatcherView
+  onFix?: (id: string) => void
 }) {
   const c = STATUS_COLOR[fork.status]
   const isPulsing = fork.status === 'navigating' || fork.status === 'acting'
   const thoughts = fork.thoughts ?? []
+  const showClaudeSection = fork.verdict === 'bug' || fork.verdict === 'error'
+  const claudePrompt = useMemo(
+    () => (showClaudeSection ? buildClaudePrompt(fork, targetUrl) : ''),
+    [showClaudeSection, fork, targetUrl]
+  )
+  const claudeUrl = useMemo(
+    () => (claudePrompt ? `https://claude.ai/new?q=${encodeURIComponent(claudePrompt)}` : ''),
+    [claudePrompt]
+  )
+  const [promptCopied, setPromptCopied] = useState(false)
+  const copyPrompt = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(claudePrompt)
+      setPromptCopied(true)
+      setTimeout(() => setPromptCopied(false), 1500)
+    } catch {}
+  }, [claudePrompt])
+
+  // Build the replay timeline: one frame per agent step (the screenshot the
+  // agent saw BEFORE its action), then a final freeze frame after everything.
+  const replayFrames = useMemo(() => {
+    const out: { frameB64?: string; label: string; thought?: AgentThought }[] = []
+    thoughts.forEach((t, i) => {
+      out.push({
+        frameB64: t.frameB64,
+        label: `step ${i + 1} · ${t.type}`,
+        thought: t,
+      })
+    })
+    if (fork.frameB64) {
+      out.push({
+        frameB64: fork.frameB64,
+        label: fork.frameIsFinal ? 'final' : 'live',
+      })
+    }
+    return out
+  }, [thoughts, fork.frameB64, fork.frameIsFinal])
+
+  const lastIdx = Math.max(0, replayFrames.length - 1)
+  const [step, setStep] = useState(lastIdx)
+  const [playing, setPlaying] = useState(false)
+
+  // Snap to the latest frame as new ones stream in (unless user is scrubbing)
+  const isAtEndRef = useRef(true)
+  useEffect(() => {
+    if (isAtEndRef.current) setStep(lastIdx)
+  }, [lastIdx])
+  useEffect(() => {
+    isAtEndRef.current = step === lastIdx
+  }, [step, lastIdx])
+
+  // Auto-play: advance one frame per ~900ms
+  useEffect(() => {
+    if (!playing) return
+    const id = setInterval(() => {
+      setStep((s) => {
+        if (s >= lastIdx) {
+          setPlaying(false)
+          return s
+        }
+        return s + 1
+      })
+    }, 900)
+    return () => clearInterval(id)
+  }, [playing, lastIdx])
+
+  const currentFrame = replayFrames[step]?.frameB64 ?? fork.frameB64
+  const currentThought =
+    step < thoughts.length ? thoughts[step] : undefined
 
   return (
     <div
@@ -1049,9 +1343,10 @@ function ExpandedFork({
           border: '1px solid #23262d',
           borderRadius: 12,
           width: 'min(1280px, 96vw)',
-          maxHeight: '94vh',
+          height: showClaudeSection ? 'min(940px, 94vh)' : 'min(820px, 94vh)',
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 360px',
+          gridTemplateRows: showClaudeSection ? 'minmax(280px, 1fr) 38vh' : '1fr',
           overflow: 'hidden',
           boxShadow: '0 30px 80px rgba(0,0,0,0.6)',
           fontFamily: 'var(--font-sans), system-ui',
@@ -1117,25 +1412,30 @@ function ExpandedFork({
             >
               close · esc
             </button>
+            <span style={{ position: 'absolute', top: 4, right: 4, fontSize: 9, color: '#a78bfa', fontFamily: 'var(--font-mono), monospace', opacity: 0.7 }}>build-v4</span>
           </div>
           <div
             style={{
               flex: 1,
               minHeight: 0,
+              minWidth: 0,
               position: 'relative',
               background: '#000',
               display: 'grid',
               placeItems: 'center',
+              overflow: 'hidden',
             }}
           >
-            {fork.frameB64 ? (
+            {currentFrame ? (
               <img
-                src={`data:image/jpeg;base64,${fork.frameB64}`}
+                src={`data:image/jpeg;base64,${currentFrame}`}
                 alt={fork.strategyName}
                 draggable={false}
                 style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
                   objectFit: 'contain',
                   display: 'block',
                 }}
@@ -1186,7 +1486,148 @@ function ExpandedFork({
                 live
               </div>
             )}
+            {/* Caption overlay: which step we're viewing in the replay */}
+            {currentThought && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,
+                  right: 12,
+                  padding: '8px 12px',
+                  background: 'rgba(6,7,9,0.78)',
+                  border: '1px solid #1d1f25',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  color: '#cbd0d9',
+                  lineHeight: 1.45,
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: 10,
+                    color:
+                      currentThought.type === 'click' ? '#7aa7ff'
+                      : currentThought.type === 'fill' ? '#fbbf24'
+                      : currentThought.type === 'press' ? '#7dd3fc'
+                      : currentThought.type === 'eval' ? '#c9a8ff'
+                      : currentThought.type === 'spawn' ? '#a78bfa'
+                      : currentThought.type === 'done'
+                          ? (currentThought.verdict === 'bug' ? '#ff6b6b' : currentThought.verdict === 'passed' ? '#7ddc9c' : '#9ea3ad')
+                      : '#9ea3ad',
+                    fontWeight: 600,
+                    letterSpacing: '0.06em',
+                    textTransform: 'uppercase',
+                    marginRight: 8,
+                  }}
+                >
+                  {currentThought.type === 'spawn'
+                    ? `SPAWN ×${currentThought.spawnCount ?? '?'}`
+                    : currentThought.type === 'done'
+                      ? `DONE · ${currentThought.verdict ?? ''}`
+                      : currentThought.type.toUpperCase()}
+                  {currentThought.selector && (
+                    <span style={{ color: '#9ea3ad', marginLeft: 4 }}>{currentThought.selector}</span>
+                  )}
+                </span>
+                {currentThought.reason}
+              </div>
+            )}
           </div>
+          {/* Replay timeline */}
+          {replayFrames.length > 0 && (
+            <div
+              data-debug="replay-timeline"
+              style={{
+                padding: '0.65rem 1rem',
+                borderTop: '3px solid #ff00ff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                background: '#2a0a2a',
+                flexShrink: 0,
+                minHeight: 50,
+              }}
+            >
+              <button
+                onClick={() => setPlaying((p) => !p)}
+                disabled={replayFrames.length < 2}
+                aria-label={playing ? 'pause' : 'play'}
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: playing ? '#a78bfa' : '#15151a',
+                  color: playing ? '#0a0b0d' : '#cbd0d9',
+                  fontSize: 14,
+                  display: 'grid',
+                  placeItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                {playing ? '❚❚' : '▶'}
+              </button>
+              <button
+                onClick={() => { setPlaying(false); setStep((s) => Math.max(0, s - 1)) }}
+                disabled={step <= 0}
+                aria-label="prev"
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: '#15151a',
+                  color: step <= 0 ? '#4a4a52' : '#cbd0d9',
+                  fontSize: 11,
+                  flexShrink: 0,
+                }}
+              >
+                ◀
+              </button>
+              <button
+                onClick={() => { setPlaying(false); setStep((s) => Math.min(lastIdx, s + 1)) }}
+                disabled={step >= lastIdx}
+                aria-label="next"
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 4,
+                  border: '1px solid #2f333b',
+                  background: '#15151a',
+                  color: step >= lastIdx ? '#4a4a52' : '#cbd0d9',
+                  fontSize: 11,
+                  flexShrink: 0,
+                }}
+              >
+                ▶
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={lastIdx}
+                value={step}
+                onChange={(e) => { setPlaying(false); setStep(parseInt(e.target.value, 10)) }}
+                style={{ flex: 1, accentColor: '#a78bfa' }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  color: '#9ea3ad',
+                  letterSpacing: '0.06em',
+                  flexShrink: 0,
+                  minWidth: 90,
+                  textAlign: 'right',
+                }}
+              >
+                {replayFrames[step]?.label ?? `${step + 1} / ${replayFrames.length}`}
+              </span>
+            </div>
+          )}
         </div>
         <aside
           style={{
@@ -1194,6 +1635,7 @@ function ExpandedFork({
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
+            overflowY: 'auto',
             background: '#0d0e11',
           }}
         >
@@ -1286,6 +1728,26 @@ function ExpandedFork({
               >
                 err: {fork.error}
               </div>
+            )}
+            {fork.verdict === 'error' && onFix && (
+              <button
+                onClick={() => { onClose(); onFix(fork.id) }}
+                style={{
+                  marginTop: 10,
+                  background: '#1a1227',
+                  border: '1px solid #c9a8ff',
+                  color: '#e3cffe',
+                  borderRadius: 5,
+                  padding: '7px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  letterSpacing: '0.06em',
+                  cursor: 'pointer',
+                  width: '100%',
+                }}
+              >
+                ✦ fix with claude
+              </button>
             )}
           </div>
           <div
@@ -1381,6 +1843,115 @@ function ExpandedFork({
             })}
           </div>
         </aside>
+        {showClaudeSection && (
+          <section
+            style={{
+              gridColumn: '1 / -1',
+              borderTop: '1px solid #2a1740',
+              background: 'linear-gradient(180deg, #0e0814 0%, #0a0710 100%)',
+              padding: '0.9rem 1.1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              minHeight: 0,
+              overflow: 'hidden',
+            }}
+          >
+            <header
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: 2,
+                  background: '#a78bfa',
+                  boxShadow: '0 0 8px #a78bfa',
+                }}
+              />
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 10,
+                  color: '#a78bfa',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.14em',
+                  fontWeight: 600,
+                }}
+              >
+                ✦ Fix with Claude
+              </span>
+              <span style={{ fontSize: 12, color: '#9ea3ad', marginLeft: 4 }}>
+                Copy this prompt or open it in Claude — it has the full repro context.
+              </span>
+              <span style={{ flex: 1 }} />
+              <button
+                onClick={copyPrompt}
+                style={{
+                  background: promptCopied ? '#1a2e1f' : '#15151a',
+                  border: `1px solid ${promptCopied ? '#7ddc9c' : '#2a2c32'}`,
+                  color: promptCopied ? '#7ddc9c' : '#cbd0d9',
+                  borderRadius: 5,
+                  padding: '6px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  cursor: 'pointer',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {promptCopied ? '✓ copied' : 'copy'}
+              </button>
+              <a
+                href={claudeUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  background: '#a78bfa',
+                  color: '#0a0b0d',
+                  borderRadius: 5,
+                  padding: '6px 12px',
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: 11,
+                  textDecoration: 'none',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                open in claude →
+              </a>
+            </header>
+            <pre
+              style={{
+                margin: 0,
+                padding: '10px 12px',
+                background: '#06070a',
+                border: '1px solid #1d1f25',
+                borderRadius: 6,
+                color: '#cbd0d9',
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 11,
+                lineHeight: 1.55,
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                flex: 1,
+                minHeight: 0,
+                maxHeight: '32vh',
+              }}
+            >
+              {claudePrompt}
+            </pre>
+          </section>
+        )}
       </div>
     </div>
   )
@@ -1389,6 +1960,303 @@ function ExpandedFork({
 function shortId(id: string): string {
   if (id.length <= 10) return id
   return `${id.slice(0, 4)}…${id.slice(-4)}`
+}
+
+function buildClaudePrompt(fork: ForkNode, targetUrl?: string): string {
+  const lines: string[] = []
+  const isBug = fork.verdict === 'bug'
+  const isError = fork.verdict === 'error'
+
+  if (isBug) {
+    lines.push(
+      'An adversarial QA agent (driving Playwright + GPT-4o-mini) found a real bug in my web app. Help me fix the app.',
+      '',
+      '## What the agent observed',
+    )
+    if (fork.bugKind) lines.push(`- bug kind: ${fork.bugKind}`)
+    if (fork.bugEvidence) lines.push(`- evidence: ${fork.bugEvidence}`)
+    if (fork.bugDetail) lines.push(`- detail: ${fork.bugDetail}`)
+    if (typeof fork.ordersCreated === 'number')
+      lines.push(`- items created during fork: ${fork.ordersCreated}${fork.excess ? ` (+${fork.excess} unexpected)` : ''}`)
+  } else if (isError) {
+    lines.push(
+      'A Playwright-driven AI agent crashed mid-run. Help me figure out the root cause and propose a fix.',
+      '',
+      '## Error',
+      '```',
+      fork.error ?? '(no error message captured)',
+      '```',
+    )
+  } else {
+    lines.push(
+      'An adversarial QA agent finished a fork without finding a definitive bug. Help me reason about whether something subtle was missed.',
+    )
+  }
+
+  lines.push(
+    '',
+    '## Fork context',
+    `- strategy: ${fork.strategyName}`,
+    `- intent: ${fork.description}`,
+    `- target URL: ${targetUrl ?? '(unknown)'}`,
+    `- fork id: ${fork.id}`,
+    `- verdict: ${fork.verdict ?? 'unknown'}`,
+    `- duration: ${typeof fork.durMs === 'number' ? `${fork.durMs}ms` : 'unknown'}`,
+  )
+  if (fork.parentForkId) lines.push(`- parent fork: ${fork.parentForkId}`)
+
+  const thoughts = fork.thoughts ?? []
+  lines.push('', `## Action history (${thoughts.length} step${thoughts.length === 1 ? '' : 's'})`)
+  if (thoughts.length === 0) {
+    lines.push('(no actions executed)')
+  } else {
+    thoughts.forEach((t, i) => {
+      const head =
+        t.type === 'click' ? `click ${t.selector ?? '?'}`
+        : t.type === 'fill' ? `fill ${t.selector ?? '?'} = ${JSON.stringify(t.value ?? '')}`
+        : t.type === 'press' ? `press ${t.key ?? '?'} on ${t.selector ?? '?'}`
+        : t.type === 'eval' ? 'eval'
+        : t.type === 'spawn' ? `spawn x${t.spawnCount ?? '?'}`
+        : t.type === 'done' ? `done · ${t.verdict ?? ''}`
+        : t.type
+      lines.push(`${i + 1}. [${head}] ${t.reason}`)
+      if (t.code) lines.push('   code:', '   ```', ...t.code.split('\n').map((l) => `   ${l}`), '   ```')
+    })
+  }
+
+  lines.push('', '## What I need')
+  if (isBug) {
+    lines.push(
+      '- Identify the most likely root cause in my web app (server validation, idempotency, escaping, etc.)',
+      '- Show me a concrete code change (unified diff if possible) that fixes it',
+      '- Note whether this should be fixed on the client, the server, or both — and why',
+    )
+  } else if (isError) {
+    lines.push(
+      '- Most likely root cause of the Playwright failure (selector, timing, navigation, network, stale DOM, etc.)',
+      '- A concrete code/config change to fix or harden against it',
+      '- If the error looks like a real bug in the target app, call that out',
+    )
+  } else {
+    lines.push(
+      '- What the agent might have missed given the action history',
+      '- Suggest follow-up steps to confirm or rule out a bug at this fork point',
+    )
+  }
+  return lines.join('\n')
+}
+
+function ClaudeFixModal({
+  fork,
+  targetUrl,
+  onClose,
+}: {
+  fork: ForkNode
+  targetUrl?: string
+  onClose: () => void
+}) {
+  const prompt = useMemo(() => buildClaudePrompt(fork, targetUrl), [fork, targetUrl])
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(prompt)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {}
+  }, [prompt])
+
+  const claudeUrl = `https://claude.ai/new?q=${encodeURIComponent(prompt)}`
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1100,
+        background: 'rgba(6,7,9,0.85)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'grid',
+        placeItems: 'center',
+        padding: '4vh 4vw',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 'min(820px, 100%)',
+          maxHeight: '92vh',
+          background: '#0d0e11',
+          border: '1px solid #2a1740',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(167,139,250,0.18)',
+          borderRadius: 12,
+          display: 'flex',
+          flexDirection: 'column',
+          color: '#ececee',
+        }}
+      >
+        <header
+          style={{
+            padding: '0.95rem 1.1rem',
+            borderBottom: '1px solid #1d1f25',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 2,
+              background: '#c9a8ff',
+              boxShadow: '0 0 8px #c9a8ff',
+            }}
+          />
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: 10,
+                color: '#a78bfa',
+                letterSpacing: '0.14em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Fork errored · fix with Claude
+            </div>
+            <div style={{ fontSize: 14, marginTop: 3, fontWeight: 500 }}>
+              {fork.strategyName}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'transparent',
+              border: '1px solid #2a2c32',
+              color: '#9ea3ad',
+              borderRadius: 4,
+              padding: '4px 10px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11,
+              cursor: 'pointer',
+            }}
+          >
+            esc
+          </button>
+        </header>
+
+        <div
+          style={{
+            padding: '0.9rem 1.1rem 0.5rem',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: 11,
+            color: '#e3cffe',
+            background: '#120c1c',
+            borderBottom: '1px solid #1d1f25',
+            wordBreak: 'break-word',
+            lineHeight: 1.5,
+            maxHeight: 120,
+            overflowY: 'auto',
+          }}
+        >
+          {fork.error ?? '(no error message)'}
+        </div>
+
+        <div style={{ padding: '0.9rem 1.1rem', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div
+            style={{
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 10,
+              color: '#5a5f69',
+              textTransform: 'uppercase',
+              letterSpacing: '0.14em',
+              marginBottom: 6,
+            }}
+          >
+            Prompt for Claude
+          </div>
+          <textarea
+            readOnly
+            value={prompt}
+            style={{
+              flex: 1,
+              minHeight: 220,
+              maxHeight: '40vh',
+              width: '100%',
+              resize: 'vertical',
+              background: '#06070a',
+              border: '1px solid #1d1f25',
+              borderRadius: 6,
+              color: '#cbd0d9',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              padding: 10,
+              outline: 'none',
+            }}
+          />
+        </div>
+
+        <footer
+          style={{
+            padding: '0.85rem 1.1rem',
+            borderTop: '1px solid #1d1f25',
+            display: 'flex',
+            gap: 8,
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+          }}
+        >
+          <button
+            onClick={copy}
+            style={{
+              background: copied ? '#1a2e1f' : '#15151a',
+              border: `1px solid ${copied ? '#7ddc9c' : '#2a2c32'}`,
+              color: copied ? '#7ddc9c' : '#cbd0d9',
+              borderRadius: 5,
+              padding: '7px 14px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 12,
+              cursor: 'pointer',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            {copied ? '✓ copied' : 'copy prompt'}
+          </button>
+          <a
+            href={claudeUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              background: '#a78bfa',
+              border: '1px solid #a78bfa',
+              color: '#0a0b0d',
+              borderRadius: 5,
+              padding: '7px 14px',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 12,
+              fontWeight: 600,
+              textDecoration: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            open in claude.ai →
+          </a>
+        </footer>
+      </div>
+    </div>
+  )
 }
 
 export const ForkTreeViewer = RunView

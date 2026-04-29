@@ -25,35 +25,16 @@ function loadStoredRepo(): TargetRepoForm {
 export default function Home() {
   const router = useRouter()
   const [starting, setStarting] = useState(false)
-  const [showRepoForm, setShowRepoForm] = useState(false)
-  const [repoForm, setRepoForm] = useState<TargetRepoForm>(EMPTY_REPO)
-
-  useEffect(() => {
-    setRepoForm(loadStoredRepo())
-  }, [])
+  const [targetUrl, setTargetUrl] = useState('')
 
   const startRun = useCallback(async () => {
     if (starting) return
     setStarting(true)
     try {
-      const filled =
-        repoForm.owner && repoForm.repo && repoForm.baseBranch && repoForm.installationId
-      const body: { targetRepo?: unknown } = {}
-      if (filled) {
-        body.targetRepo = {
-          owner: repoForm.owner,
-          repo: repoForm.repo,
-          baseBranch: repoForm.baseBranch,
-          installationId: Number(repoForm.installationId),
-        }
-        try {
-          window.localStorage.setItem('parallel-agents:targetRepo', JSON.stringify(repoForm))
-        } catch {}
-      }
       const res = await fetch('/api/runs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targetUrl: targetUrl.trim() || undefined }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const { runId } = (await res.json()) as { runId: string }
@@ -62,7 +43,7 @@ export default function Home() {
       setStarting(false)
       alert(`failed to start run: ${e}`)
     }
-  }, [router, starting, repoForm])
+  }, [router, starting, targetUrl])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -95,7 +76,7 @@ export default function Home() {
               />
             </svg>
           </span>
-          <strong>Parallel Agents</strong>
+          <strong>vibe check</strong>
         </div>
         <div className="env-chip">
           <span className="dot" /> ready
@@ -104,30 +85,51 @@ export default function Home() {
 
       <main className="hero">
         <h1>
-          Four browsers,<br />
-          one shared state,<br />
-          <em>every</em> reality at once.
+          One snapshot,<br />
+          a swarm of agents,<br />
+          <em>every</em> bug at once.
         </h1>
 
         <ForkDiagram />
 
         <p className="tagline">snapshot · fork · diff</p>
 
-        <div className="cta-row">
-          <button className="begin-btn" onClick={startRun} disabled={starting}>
-            {starting ? (
-              <>
-                <span className="spinner" /> spawning…
-              </>
-            ) : (
-              <>
-                Start <span className="arrow">→</span>
-              </>
-            )}
-          </button>
-          <span className="kbd-hint">
-            <kbd>↵</kbd>
-          </span>
+        <div className="cta-row" style={{ flexDirection: 'column', gap: 12, alignItems: 'stretch' }}>
+          <input
+            type="text"
+            value={targetUrl}
+            onChange={(e) => setTargetUrl(e.target.value)}
+            placeholder="target URL (leave blank for built-in buggy SaaS)"
+            spellCheck={false}
+            autoComplete="off"
+            style={{
+              width: '100%',
+              padding: '0.7rem 0.9rem',
+              background: '#141415',
+              border: '1px solid #2f333b',
+              borderRadius: '0.5rem',
+              color: '#eaeaea',
+              fontFamily: 'var(--font-mono), monospace',
+              fontSize: 13,
+              outline: 'none',
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button className="begin-btn" onClick={startRun} disabled={starting}>
+              {starting ? (
+                <>
+                  <span className="spinner" /> spawning…
+                </>
+              ) : (
+                <>
+                  Start <span className="arrow">→</span>
+                </>
+              )}
+            </button>
+            <span className="kbd-hint">
+              <kbd>↵</kbd>
+            </span>
+          </div>
         </div>
 
         <div style={{ marginTop: 18, fontFamily: 'var(--font-mono), monospace', fontSize: 11 }}>
@@ -224,7 +226,7 @@ function ForkDiagram() {
       viewBox="0 0 380 260"
       className="fork-diagram"
       role="img"
-      aria-label="One snapshot fans out into four parallel forks"
+      aria-label="One snapshot fans out into a swarm of vibe check agents"
     >
       <g className="fork-origin">
         <rect x="6" y="120" width="44" height="20" rx="4" />
